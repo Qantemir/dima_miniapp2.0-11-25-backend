@@ -1,16 +1,82 @@
 import logging
+import asyncio
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+from datetime import datetime
 
 from .config import settings
 from .database import close_mongo_connection, connect_to_mongo
 from .cache import close_redis, get_redis
 from .utils import permanently_delete_order_entry
 from .routers import admin, bot_webhook, cart, catalog, orders, store
+from .schemas import StoreStatus, CatalogResponse
 
 app = FastAPI(title="Mini Shop Telegram Backend", version="1.0.0")
+
+# Глобальный обработчик исключений для 503 ошибок (БД недоступна)
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Обрабатывает HTTPException и возвращает fallback значения для критичных эндпоинтов"""
+    logger = logging.getLogger(__name__)
+    
+    if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+        path = request.url.path
+        
+        # Для /api/store/status возвращаем fallback статус
+        if path == "/api/store/status":
+            logger.warning(f"БД недоступна для {path}, возвращаем fallback статус")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "is_sleep_mode": False,
+                    "sleep_message": None,
+                    "sleep_until": None,
+                    "payment_link": None,
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+            )
+        
+        # Для /api/catalog возвращаем пустой каталог
+        if path == "/api/catalog":
+            logger.warning(f"БД недоступна для {path}, возвращаем пустой каталог")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "categories": [],
+                    "products": [],
+                }
+            )
+        
+        # Для /api/store/status/stream возвращаем простой стрим с fallback данными
+        if path == "/api/store/status/stream":
+            logger.warning(f"БД недоступна для {path}, возвращаем fallback стрим")
+            from fastapi.responses import StreamingResponse
+            import json
+            
+            async def fallback_stream():
+                fallback_data = {
+                    "is_sleep_mode": False,
+                    "sleep_message": None,
+                    "sleep_until": None,
+                    "payment_link": None,
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+                yield f"event: status\ndata: {json.dumps(fallback_data, ensure_ascii=False)}\n\n"
+                # Отправляем одно сообщение и закрываем стрим
+                await asyncio.sleep(0.1)
+            
+            response = StreamingResponse(fallback_stream(), media_type="text/event-stream")
+            response.headers["Content-Encoding"] = "identity"
+            return response
+    
+    # Для остальных ошибок возвращаем стандартный ответ
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail}
+    )
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import StreamingResponse, Response
