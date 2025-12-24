@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, List
 
-from pydantic import Field, validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -47,7 +47,8 @@ class Settings(BaseSettings):
         None, env="PUBLIC_URL"
     )  # Публичный URL для webhook (например, https://your-domain.com)
 
-    @validator("public_url", pre=True)
+    @field_validator("public_url", mode="before")
+    @classmethod
     def auto_detect_public_url(cls, value):
         """Автоматически определяет PUBLIC_URL из переменных окружения хостинга, если не указан явно."""
         if value:
@@ -87,7 +88,8 @@ class Settings(BaseSettings):
 
         return None
 
-    @validator("admin_ids", pre=True)
+    @field_validator("admin_ids", mode="before")
+    @classmethod
     def split_admin_ids(cls, value):
         """Разбивает строку ADMIN_IDS на список целых чисел."""
         if value is None:
@@ -107,22 +109,21 @@ class Settings(BaseSettings):
                     try:
                         ids.append(int(v))
                     except ValueError:
-                        # Логируем, но не падаем - просто пропускаем некорректное значение
-                        import logging
-
-                        logger = logging.getLogger(__name__)
-                        logger.warning(f"Некорректное значение в ADMIN_IDS: '{v}', пропускаем")
+                        # Пропускаем некорректное значение
+                        pass
             return ids
         return []
 
-    @validator("upload_dir", pre=True)
+    @field_validator("upload_dir", mode="before")
+    @classmethod
     def ensure_upload_dir(cls, value):
         """Обеспечивает, что upload_dir является Path объектом."""
         if isinstance(value, Path):
             return value
         return Path(value)
 
-    @validator("dev_allowed_user_ids", pre=True, always=True)
+    @field_validator("dev_allowed_user_ids", mode="before")
+    @classmethod
     def split_dev_allowed_user_ids(cls, value):
         """Валидатор для обработки dev_allowed_user_ids из env переменной."""
         # Обрабатываем None и пустые значения
@@ -154,11 +155,8 @@ class Settings(BaseSettings):
                     try:
                         ids.append(int(v))
                     except ValueError:
-                        # Логируем, но не падаем - просто пропускаем некорректное значение
-                        import logging
-
-                        logger = logging.getLogger(__name__)
-                        logger.warning(f"Некорректное значение в DEV_ALLOWED_USER_IDS: '{v}', пропускаем")
+                        # Пропускаем некорректное значение
+                        pass
             return ids
         return []
 

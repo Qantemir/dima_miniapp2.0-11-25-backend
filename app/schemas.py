@@ -6,27 +6,48 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional
 
-from pydantic import AnyHttpUrl, BaseModel, Field, validator
+from bson import ObjectId
+from pydantic import AnyHttpUrl, BaseModel, Field
+from pydantic_core import core_schema
 
 
 class PyObjectId(str):
-    """PyObjectId модель."""
+    """PyObjectId модель для Pydantic v2."""
 
     @classmethod
-    def __get_validators__(cls):
-        """Получает валидаторы для Pydantic."""
-        yield cls.validate
+    def __get_pydantic_core_schema__(
+        cls, source_type, handler
+    ):
+        """Получает схему для Pydantic v2."""
+        def validate_value(v):
+            """Валидирует значение как ObjectId."""
+            if isinstance(v, ObjectId):
+                return str(v)
+            if isinstance(v, str):
+                if ObjectId.is_valid(v):
+                    return v
+                raise ValueError(f"Invalid ObjectId: {v}")
+            raise ValueError(f"Invalid ObjectId type: {type(v)}")
 
-    @classmethod
-    def validate(cls, v):
-        """Валидирует значение как ObjectId."""
-        from bson import ObjectId
+        from_str_schema = core_schema.chain_schema(
+            [
+                core_schema.str_schema(),
+                core_schema.no_info_plain_validator_function(validate_value),
+            ]
+        )
 
-        if isinstance(v, ObjectId):
-            return str(v)
-        if isinstance(v, str) and ObjectId.is_valid(v):
-            return v
-        raise ValueError("Invalid ObjectId")
+        return core_schema.json_or_python_schema(
+            json_schema=from_str_schema,
+            python_schema=core_schema.union_schema(
+                [
+                    core_schema.is_instance_schema(ObjectId),
+                    from_str_schema,
+                ]
+            ),
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                lambda x: str(x) if isinstance(x, ObjectId) else x
+            ),
+        )
 
 
 class CategoryBase(BaseModel):

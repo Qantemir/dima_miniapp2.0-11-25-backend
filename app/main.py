@@ -39,7 +39,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
         # Для /api/store/status возвращаем fallback статус
         if path == "/api/store/status":
-            logger.warning(f"БД недоступна для {path}, возвращаем fallback статус")
             return JSONResponse(
                 status_code=200,
                 content={
@@ -51,7 +50,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
         # Для /api/catalog возвращаем пустой каталог
         if path == "/api/catalog":
-            logger.warning(f"БД недоступна для {path}, возвращаем пустой каталог")
             return JSONResponse(
                 status_code=200,
                 content={
@@ -62,8 +60,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
         # Для /api/store/status/stream возвращаем простой стрим с fallback данными
         if path == "/api/store/status/stream":
-            logger.warning(f"БД недоступна для {path}, возвращаем fallback стрим")
-
             async def fallback_stream():
                 fallback_data = {
                     "is_sleep_mode": False,
@@ -94,7 +90,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 
     # Для критичных эндпоинтов возвращаем fallback вместо 500
     if path == "/api/store/status":
-        logger.warning(f"Ошибка для {path}, возвращаем fallback статус")
         return JSONResponse(
             status_code=200,
             content={
@@ -107,7 +102,6 @@ async def global_exception_handler(request: Request, exc: Exception):
         )
 
     if path == "/api/catalog":
-        logger.warning(f"Ошибка для {path}, возвращаем пустой каталог")
         return JSONResponse(
             status_code=200,
             content={
@@ -117,8 +111,6 @@ async def global_exception_handler(request: Request, exc: Exception):
         )
 
     if path == "/api/store/status/stream":
-        logger.warning(f"Ошибка для {path}, возвращаем fallback стрим")
-
         async def fallback_stream():
             fallback_data = {
                 "is_sleep_mode": False,
@@ -243,16 +235,10 @@ def _find_next_dir() -> Path:
     candidates.append(Path.cwd() / "dist")
 
     for next_path in candidates:
-        if settings.environment != "production":
-            logger.info(f"🔍 Checking Next.js output at: {next_path}")
         if next_path.exists():
-            if settings.environment != "production":
-                logger.info(f"✅ Using Next.js output at: {next_path}")
             return next_path
 
     # Фолбэк — нет .next, вернём путь по умолчанию
-    if settings.environment != "production":
-        logger.warning("⚠️ .next directory not found, frontend will not be served")
     return Path("/.next")  # заведомо несуществующий
 
 
@@ -261,8 +247,6 @@ next_dir = _find_next_dir()
 # Монтируем статические файлы Next.js
 static_dir = next_dir / "static"
 if static_dir.exists():
-    if settings.environment != "production":
-        logger.info(f"✅ Mounting Next.js static files from: {static_dir}")
     app.mount("/_next/static", StaticFiles(directory=str(static_dir)), name="next-static")
 
 # Монтируем Next.js standalone server файлы для SSR
@@ -270,8 +254,6 @@ standalone_dir = next_dir / "standalone"
 if standalone_dir.exists():
     server_dir = standalone_dir / "server"
     if server_dir.exists():
-        if settings.environment != "production":
-            logger.info(f"✅ Found Next.js standalone server at: {server_dir}")
         # Монтируем server chunks если есть
         chunks_dir = server_dir / "chunks"
         if chunks_dir.exists():
@@ -283,9 +265,8 @@ public_dir = (
     here.parent.parent.parent / "public" if (here.parent.parent.parent / "public").exists() else Path.cwd() / "public"
 )
 if public_dir.exists():
-    if settings.environment != "production":
-        logger.info(f"✅ Mounting public files from: {public_dir}")
     # Favicon убран, так как приложение используется только в Telegram WebView
+    pass
 
 
 @app.middleware("http")
@@ -333,28 +314,21 @@ async def cleanup_deleted_orders():
             for order_doc in deleted_orders:
                 try:
                     await permanently_delete_order_entry(db, order_doc)
-                    logger.info(f"Окончательно удален заказ {order_doc.get('_id')}")
-                except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError) as e:
-                    # Временные проблемы с подключением - логируем как предупреждение, не как ошибку
-                    logger.warning(
-                        f"Временная проблема с подключением к MongoDB при удалении заказа {order_doc.get('_id')}: {e}"
-                    )
+                except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
+                    # Временные проблемы с подключением - игнорируем
+                    pass
                 except Exception as e:
                     logger.error(f"Ошибка при окончательном удалении заказа {order_doc.get('_id')}: {e}")
 
             # Ждем перед следующей проверкой (дольше в production для экономии ресурсов)
             sleep_time = 300 if settings.environment == "production" else 60  # 5 минут в production, 1 минута в dev
             await asyncio.sleep(sleep_time)
-        except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError) as e:
-            # Временные проблемы с подключением - логируем только в dev
-            if settings.environment != "production":
-                logger.warning(f"Временная проблема с подключением к MongoDB в фоновой задаче очистки заказов: {e}")
+        except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
+            # Временные проблемы с подключением - игнорируем
             sleep_time = 300 if settings.environment == "production" else 60
             await asyncio.sleep(sleep_time)
         except Exception as e:
-            # Логируем только критические ошибки в production
-            if settings.environment != "production":
-                logger.error(f"Ошибка в фоновой задаче очистки заказов: {e}")
+            logger.error(f"Ошибка в фоновой задаче очистки заказов: {e}")
             sleep_time = 300 if settings.environment == "production" else 60
             await asyncio.sleep(sleep_time)
 
@@ -388,21 +362,11 @@ async def startup():
     # Настраиваем webhook для Telegram Bot API (если указан публичный URL)
     logger = logging.getLogger(__name__)
 
-    # Проверяем, был ли PUBLIC_URL определен автоматически
-    if settings.public_url:
-        # Проверяем, был ли он установлен явно через переменную окружения
-        explicit_public_url = os.getenv("PUBLIC_URL")
-        if explicit_public_url:
-            logger.info(f"PUBLIC_URL установлен явно: {settings.public_url}")
-        else:
-            logger.info(f"PUBLIC_URL определен автоматически из переменных окружения хостинга: {settings.public_url}")
-
     if settings.telegram_bot_token and settings.public_url:
         try:
             import httpx
 
             webhook_url = f"{settings.public_url.rstrip('/')}{settings.api_prefix}/bot/webhook"
-            logger.info(f"Настраиваем webhook: {webhook_url} (PUBLIC_URL: {settings.public_url})")
 
             async with httpx.AsyncClient(timeout=15.0) as client:
                 # Сначала удаляем старый webhook (если есть)
@@ -420,37 +384,12 @@ async def startup():
                     json={"url": webhook_url, "allowed_updates": ["callback_query"]},  # Только callback queries
                 )
                 result = response.json()
-                if result.get("ok"):
-                    logger.info(f"✅ Webhook успешно настроен: {webhook_url}")
-
-                    # Проверяем статус webhook
-                    check_response = await client.get(
-                        f"https://api.telegram.org/bot{settings.telegram_bot_token}/getWebhookInfo"
-                    )
-                    check_result = check_response.json()
-                    if check_result.get("ok"):
-                        webhook_info = check_result.get("result", {})
-                        logger.info(
-                            f"Webhook info: url={webhook_info.get('url')}, pending={webhook_info.get('pending_update_count', 0)}"
-                        )
-                else:
+                if not result.get("ok"):
                     error_desc = result.get("description", "Unknown error")
                     logger.error(f"❌ Не удалось настроить webhook: {error_desc}")
                     logger.error(f"Проверьте, что URL {webhook_url} доступен из интернета")
         except Exception as e:
             logger.error(f"Ошибка при настройке webhook: {e}", exc_info=True)
-    elif settings.telegram_bot_token and not settings.public_url:
-        logger.warning(
-            "⚠️ TELEGRAM_BOT_TOKEN настроен, но PUBLIC_URL не указан. Webhook не будет настроен автоматически."
-        )
-        logger.warning(
-            "Добавьте PUBLIC_URL в .env или используйте POST /api/bot/webhook/setup с параметром 'url' для ручной настройки"
-        )
-        logger.info(
-            "Проверьте переменные окружения: RAILWAY_PUBLIC_DOMAIN, RENDER_EXTERNAL_URL, FLY_APP_NAME, VERCEL_URL и др."
-        )
-    elif not settings.telegram_bot_token:
-        logger.warning("⚠️ TELEGRAM_BOT_TOKEN не настроен. Webhook не будет работать.")
 
 
 @app.on_event("shutdown")
@@ -466,15 +405,13 @@ async def shutdown():
     logger = logging.getLogger(__name__)
     try:
         await close_mongo_connection()
-        logger.info("MongoDB соединение закрыто")
     except Exception as e:
-        logger.warning(f"Ошибка при закрытии соединения с MongoDB: {e}")
+        logger.error(f"Ошибка при закрытии соединения с MongoDB: {e}")
 
     try:
         await close_redis()
-        logger.info("Redis соединение закрыто")
     except Exception as e:
-        logger.warning(f"Ошибка при закрытии соединения с Redis: {e}")
+        logger.error(f"Ошибка при закрытии соединения с Redis: {e}")
 
 
 app.include_router(catalog.router, prefix=settings.api_prefix)

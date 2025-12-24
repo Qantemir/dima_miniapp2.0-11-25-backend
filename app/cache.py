@@ -35,9 +35,7 @@ async def get_redis() -> Optional[aioredis.Redis]:
             )
             # Проверяем подключение
             await _redis_client.ping()
-            logger.info("✅ Redis подключен успешно")
-        except Exception as e:
-            logger.warning(f"⚠️ Redis недоступен, работаем без кэша: {e}")
+        except Exception:
             _redis_client = None
 
     return _redis_client
@@ -49,7 +47,6 @@ async def close_redis():
     if _redis_client:
         await _redis_client.close()
         _redis_client = None
-        logger.info("Redis соединение закрыто")
 
 
 async def cache_get(key: str) -> Optional[bytes]:
@@ -58,12 +55,8 @@ async def cache_get(key: str) -> Optional[bytes]:
         redis = await get_redis()
         if redis:
             return await redis.get(key)
-    except Exception as e:
-        # Убираем debug логи в production
-        from .config import settings
-
-        if settings.environment != "production":
-            logger.debug(f"Ошибка получения из кэша {key}: {e}")
+    except Exception:
+        pass
     return None
 
 
@@ -74,12 +67,8 @@ async def cache_set(key: str, value: bytes, ttl: int = 300) -> bool:
         if redis:
             await redis.setex(key, ttl, value)
             return True
-    except Exception as e:
-        # Убираем debug логи в production
-        from .config import settings
-
-        if settings.environment != "production":
-            logger.debug(f"Ошибка сохранения в кэш {key}: {e}")
+    except Exception:
+        pass
     return False
 
 
@@ -90,12 +79,8 @@ async def cache_delete(key: str) -> bool:
         if redis:
             await redis.delete(key)
             return True
-    except Exception as e:
-        # Убираем debug логи в production
-        from .config import settings
-
-        if settings.environment != "production":
-            logger.debug(f"Ошибка удаления из кэша {key}: {e}")
+    except Exception:
+        pass
     return False
 
 
@@ -109,12 +94,8 @@ async def cache_delete_pattern(pattern: str) -> int:
                 keys.append(key)
             if keys:
                 return await redis.delete(*keys)
-    except Exception as e:
-        # Убираем debug логи в production
-        from .config import settings
-
-        if settings.environment != "production":
-            logger.debug(f"Ошибка удаления паттерна {pattern}: {e}")
+    except Exception:
+        pass
     return 0
 
 

@@ -82,7 +82,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         # Проверяем лимит
         if len(client_requests) >= limit:
-            logger.warning(f"Rate limit exceeded for {client_id} on {path}")
+            # Rate limit exceeded - возвращаем 429 без логирования
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"Слишком много запросов. Попробуйте через {self.window} секунд.",

@@ -108,8 +108,6 @@ async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cac
     except (ServerSelectionTimeoutError, ConnectionFailure) as e:
         import logging
 
-        logger = logging.getLogger(__name__)
-        logger.warning(f"База данных недоступна: {e}, возвращаем fallback")
         # Возвращаем fallback вместо исключения
         fallback = {
             "is_sleep_mode": False,
@@ -210,8 +208,6 @@ async def get_store_status(db: Optional[AsyncIOMotorDatabase] = Depends(get_db))
 
     # Если БД недоступна, сразу возвращаем fallback
     if db is None:
-        if settings.environment != "production":
-            logger.warning("БД недоступна, возвращаем fallback статус")
         return StoreStatus(
             is_sleep_mode=False,
             sleep_message=None,

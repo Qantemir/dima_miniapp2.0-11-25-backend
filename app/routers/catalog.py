@@ -239,12 +239,7 @@ async def fetch_catalog(
     # Если БД недоступна, возвращаем пустой каталог или кеш
     if db is None:
         if _catalog_cache is not None and _catalog_cache_etag is not None:
-            # Убрали warning логи для производительности в production
-            if settings.environment != "production":
-                logger.warning("БД недоступна, возвращаем кешированный каталог")
             return _catalog_cache, _catalog_cache_etag
-        if settings.environment != "production":
-            logger.warning("БД недоступна, возвращаем пустой каталог")
         empty_catalog = CatalogResponse(categories=[], products=[])
         return empty_catalog, "empty-catalog"
 
@@ -269,10 +264,7 @@ async def fetch_catalog(
     # Если кеш истек или версия не совпадает, получаем актуальную версию (с кешированием)
     try:
         current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
-    except Exception as e:
-        # Убрали warning логи для производительности в production
-        if settings.environment != "production":
-            logger.warning(f"Ошибка при получении версии каталога: {e}, возвращаем кеш или пустой каталог")
+    except Exception:
         if _catalog_cache is not None and _catalog_cache_etag is not None:
             return _catalog_cache, _catalog_cache_etag
         empty_catalog = CatalogResponse(categories=[], products=[])
@@ -296,10 +288,7 @@ async def fetch_catalog(
             # Двойная проверка после получения lock (возможно, другой поток уже обновил кеш)
             try:
                 current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
-            except Exception as version_error:
-                # Убрали warning логи для производительности в production
-                if settings.environment != "production":
-                    logger.warning(f"Ошибка при получении версии каталога: {version_error}, используем текущую версию")
+            except Exception:
                 current_version = _catalog_cache_version or "unknown"
 
             now = datetime.utcnow()
@@ -318,10 +307,7 @@ async def fetch_catalog(
             try:
                 data = await _load_catalog_from_db(db, only_available=only_available)
                 etag = _compute_catalog_etag(data)
-            except Exception as load_error:
-                # Убрали warning логи для производительности в production
-                if settings.environment != "production":
-                    logger.warning(f"Ошибка при загрузке каталога из БД: {load_error}, возвращаем кеш или пустой каталог")
+            except Exception:
                 if _catalog_cache is not None and _catalog_cache_etag is not None:
                     return _catalog_cache, _catalog_cache_etag
                 empty_catalog = CatalogResponse(categories=[], products=[])
@@ -359,10 +345,8 @@ async def invalidate_catalog_cache(db: AsyncIOMotorDatabase | None = None):
     # Очищаем Redis кэш
     try:
         await cache_delete_pattern("catalog:*")
-    except Exception as e:
-        # Убираем debug логи в production
-        if settings.environment != "production":
-            logger.debug(f"Ошибка очистки Redis кэша: {e}")
+    except Exception:
+        pass
 
     if db is not None:
         _catalog_cache_version = await _bump_catalog_cache_version(db)
@@ -371,8 +355,8 @@ async def invalidate_catalog_cache(db: AsyncIOMotorDatabase | None = None):
 async def _refresh_catalog_cache(db: AsyncIOMotorDatabase):
     try:
         await fetch_catalog(db, force_refresh=True)
-    except Exception as exc:
-        logger.warning("Failed to warm catalog cache after mutation: %s", exc)
+    except Exception:
+        pass
 
 
 def _build_catalog_response(catalog: CatalogResponse, etag: str) -> Response:
@@ -469,18 +453,13 @@ async def get_catalog(
             if if_none_match and if_none_match == etag:
                 return _build_not_modified_response(etag)
             return _build_catalog_response(catalog, etag)
-        except Exception as fetch_error:
-            # Убрали warning логи для производительности в production
-            if settings.environment != "production":
-                logger.warning(f"Ошибка при загрузке каталога из БД: {fetch_error}, возвращаем пустой каталог")
+        except Exception:
             empty_catalog = CatalogResponse(categories=[], products=[])
             etag = "error-catalog-fallback"
             return _build_catalog_response(empty_catalog, etag)
         except HTTPException as e:
             # Если БД недоступна, возвращаем пустой каталог вместо ошибки
             if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
-                if settings.environment != "production":
-                    logger.warning(f"БД недоступна, возвращаем пустой каталог: {e.detail}")
                 empty_catalog = CatalogResponse(categories=[], products=[])
                 etag = "empty-catalog"
                 return _build_catalog_response(empty_catalog, etag)
@@ -586,8 +565,6 @@ async def create_category(
         raise HTTPException(status_code=500, detail="Ошибка при создании категории")
     await invalidate_catalog_cache(db)
     await _refresh_catalog_cache(db)
-    if settings.environment != "production":
-        logger.info("Admin %s created category %s (%s)", _admin_id, doc.get("name"), doc.get("_id"))
     return Category(**serialize_doc(doc) | {"id": str(doc["_id"])})
 
 
@@ -630,8 +607,6 @@ async def update_category(
         raise HTTPException(status_code=404, detail="Категория не найдена")
     await invalidate_catalog_cache(db)
     await _refresh_catalog_cache(db)
-    if settings.environment != "production":
-        logger.info("Admin %s updated category %s (%s)", _admin_id, result.get("name"), result.get("_id"))
     return Category(**serialize_doc(result) | {"id": str(result["_id"])})
 
 
@@ -664,14 +639,6 @@ async def delete_category(
 
     await invalidate_catalog_cache(db)
     await _refresh_catalog_cache(db)
-    if settings.environment != "production":
-        logger.info(
-            "Admin %s deleted category %s (%s) cleanup_values=%s",
-            _admin_id,
-            category_doc.get("name"),
-            category_doc.get("_id"),
-            list(cleanup_values),
-        )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

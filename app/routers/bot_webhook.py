@@ -86,7 +86,6 @@ async def setup_webhook(request: Request):
             )
             result = response.json()
             if result.get("ok"):
-                logger.info(f"Webhook успешно настроен: {webhook_url}")
                 return {"success": True, "url": webhook_url, "message": "Webhook успешно настроен"}
             else:
                 error_msg = result.get("description", "Unknown error")
@@ -108,24 +107,8 @@ async def handle_bot_webhook(
     try:
         data = await request.json()
 
-        # Логируем входящий запрос для отладки (ограничиваем размер лога)
-        if isinstance(data, dict):
-            data_keys = list(data.keys())
-            logger.info(f"Webhook received, data keys: {data_keys}")
-            if "callback_query" in data:
-                callback_preview = {
-                    "id": data["callback_query"].get("id"),
-                    "data": data["callback_query"].get("data", "")[:50],  # Первые 50 символов
-                    "from_id": data["callback_query"].get("from", {}).get("id"),
-                }
-                logger.info(f"Callback query preview: {callback_preview}")
-        else:
-            logger.warning(f"Webhook received non-dict data: {type(data)}")
-            return {"ok": True}
-
         # Проверяем, что это callback query
-        if "callback_query" not in data:
-            logger.debug("No callback_query in data, returning ok")
+        if not isinstance(data, dict) or "callback_query" not in data:
             return {"ok": True}
 
         callback_query = data["callback_query"]
@@ -136,46 +119,35 @@ async def handle_bot_webhook(
         message_id = message.get("message_id")
         chat_id = message.get("chat", {}).get("id")
 
-        logger.info(
-            f"Callback received: callback_query_id={callback_query_id}, user_id={user_id}, callback_data={callback_data}, chat_id={chat_id}, message_id={message_id}"
-        )
-
         if not callback_query_id:
             logger.error("No callback_query_id in callback_query")
             return {"ok": True}
 
         if not user_id:
-            logger.warning("No user_id in callback_query")
             await _answer_callback_query(
                 callback_query_id, "Ошибка: не удалось определить пользователя", show_alert=True
             )
             return {"ok": True}
 
         if not callback_data:
-            logger.warning(f"No callback_data in callback_query for user_id={user_id}")
             await _answer_callback_query(callback_query_id, "Ошибка: данные кнопки не найдены", show_alert=True)
             return {"ok": True}
 
         # Проверяем, что пользователь - администратор
         settings = get_settings()
         admin_ids_set = set(settings.admin_ids) if settings.admin_ids else set()
-        logger.info(f"Checking admin access: user_id={user_id}, admin_ids={admin_ids_set}")
 
         if user_id not in admin_ids_set:
-            logger.warning(f"User {user_id} is not in admin_ids {admin_ids_set}")
             # Отвечаем на callback, но не обрабатываем
             await _answer_callback_query(
                 callback_query_id, "У вас нет прав для выполнения этого действия", show_alert=True
             )
             return {"ok": True}
 
-        logger.info(f"User {user_id} is admin, processing callback_data={callback_data}")
-
         # Обрабатываем callback для изменения статуса заказа (новый формат)
         if callback_data.startswith("status|"):
             # Формат: status|{order_id}|{status}
             parts = callback_data.split("|")
-            logger.info(f"Parsing callback_data: parts={parts}, len={len(parts)}")
 
             if len(parts) != 3:
                 logger.error(f"Invalid callback_data format: {callback_data}, parts={parts}")
@@ -184,7 +156,6 @@ async def handle_bot_webhook(
 
             order_id = parts[1]
             new_status_value = parts[2]
-            logger.info(f"Parsed: order_id={order_id}, new_status={new_status_value}")
 
             # Получаем заказ
             doc = await db.orders.find_one({"_id": as_object_id(order_id)})
@@ -209,10 +180,8 @@ async def handle_bot_webhook(
                 return {"ok": True}
 
             current_status = doc.get("status")
-            logger.info(f"Current status: {current_status}, new status: {new_status_value}")
 
             if current_status == new_status_value:
-                logger.info(f"Status already set to {new_status_value}")
                 await _answer_callback_query(
                     callback_query_id, f"Заказ уже имеет статус: {new_status_value}", show_alert=False
                 )
@@ -263,7 +232,6 @@ async def handle_bot_webhook(
                     update_operations,
                     return_document=True,
                 )
-                logger.info(f"Update result: updated={updated is not None}")
             except Exception as e:
                 logger.error(f"Error updating order: {e}")
                 await _answer_callback_query(
@@ -283,8 +251,7 @@ async def handle_bot_webhook(
                 confirm_message = status_messages.get(new_status_value, f"Статус изменён на: {new_status_value}")
 
                 # Отвечаем на callback
-                answer_result = await _answer_callback_query(callback_query_id, confirm_message, show_alert=False)
-                logger.info(f"Answer callback query result: {answer_result}")
+                await _answer_callback_query(callback_query_id, confirm_message, show_alert=False)
 
                 # Обновляем сообщение, обновляя кнопки (показываем текущий статус)
                 await _edit_message_reply_markup(
@@ -303,10 +270,6 @@ async def handle_bot_webhook(
                         )
                     except Exception as e:
                         logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
-
-                logger.info(
-                    f"✅ Заказ {order_id} изменён на статус '{new_status_value}' администратором {user_id} через кнопку"
-                )
             else:
                 logger.error(f"❌ Не удалось обновить заказ {order_id}")
                 await _answer_callback_query(callback_query_id, "Ошибка при обновлении заказа", show_alert=True)
@@ -314,7 +277,6 @@ async def handle_bot_webhook(
         # Обрабатываем callback для принятия заказа (старый формат для совместимости)
         elif callback_data.startswith("accept_order_"):
             order_id = callback_data.replace("accept_order_", "")
-            logger.info(f"Processing accept_order callback for order_id={order_id}")
 
             # Получаем заказ
             doc = await db.orders.find_one({"_id": as_object_id(order_id)})
@@ -351,14 +313,12 @@ async def handle_bot_webhook(
                         )
                     except Exception as e:
                         logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
-                logger.info(f"Заказ {order_id} принят администратором {user_id} через кнопку")
             else:
                 await _answer_callback_query(callback_query_id, "Ошибка при обновлении заказа", show_alert=True)
 
         # Обрабатываем callback для отмены заказа (старый формат для совместимости)
         elif callback_data.startswith("cancel_order_"):
             order_id = callback_data.replace("cancel_order_", "")
-            logger.info(f"Processing cancel_order callback for order_id={order_id}")
 
             # Получаем заказ
             doc = await db.orders.find_one({"_id": as_object_id(order_id)})
@@ -419,12 +379,9 @@ async def handle_bot_webhook(
                         )
                     except Exception as e:
                         logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
-
-                logger.info(f"Заказ {order_id} отменён администратором {user_id} через кнопку")
             else:
                 await _answer_callback_query(callback_query_id, "Ошибка при обновлении заказа", show_alert=True)
         else:
-            logger.warning(f"Unhandled callback_data: {callback_data}")
             await _answer_callback_query(callback_query_id, "Неизвестная команда", show_alert=True)
 
         return {"ok": True}
@@ -452,7 +409,6 @@ async def _answer_callback_query(callback_query_id: str, text: str, show_alert: 
             )
             result = response.json()
             if result.get("ok"):
-                logger.info(f"Successfully answered callback query {callback_query_id}: {text}")
                 return True
             else:
                 logger.error(f"Failed to answer callback query: {result.get('description', 'Unknown error')}")

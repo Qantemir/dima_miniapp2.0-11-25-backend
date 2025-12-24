@@ -47,7 +47,6 @@ async def connect_to_mongo():
             await ensure_indexes(db)
             # Проверяем подключение
             await client.admin.command("ping")
-            logger.info(f"Connected to MongoDB at {settings.mongo_uri}")
         except Exception as e:
             logger.error(f"Failed to connect to MongoDB: {e}")
             logger.error("Server will start but database operations will fail. Please start MongoDB.")
@@ -79,25 +78,21 @@ async def get_db() -> Optional[AsyncIOMotorDatabase]:
 
     try:
         if client is None or db is None:
-            logger.info("Подключение к базе данных...")
             await ensure_db_connection()
 
         if db is None or client is None:
-            logger.warning("База данных не инициализирована после попытки подключения")
             return None
 
         # Проверяем, что подключение действительно работает (без блокировки, быстро)
         try:
             if client is not None:
                 await asyncio.wait_for(client.admin.command("ping"), timeout=2.0)
-        except (asyncio.TimeoutError, Exception) as ping_error:
-            logger.warning(f"Ping к MongoDB не прошел: {ping_error}, пытаемся переподключиться...")
+        except (asyncio.TimeoutError, Exception):
             try:
                 await connect_to_mongo()
             except Exception:
                 pass
             if db is None:
-                logger.warning("База данных недоступна после переподключения")
                 return None
 
         return db
