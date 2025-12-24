@@ -42,39 +42,39 @@ async def list_orders(
   _admin_id: int = Depends(verify_admin),
 ):
   # Оптимизированное построение запроса
-    query = {}
-    if status_filter:
+  query = {}
+  if status_filter:
     query["status"] = {"$in": [OrderStatus.PROCESSING.value, OrderStatus.NEW.value]} if status_filter == OrderStatus.PROCESSING else status_filter.value
-    if not include_deleted:
-      query["deleted_at"] = {"$exists": False}
-    if cursor:
-      try:
-        query["_id"] = {"$lt": as_object_id(cursor)}
-      except ValueError:
-        raise HTTPException(status_code=400, detail="Некорректный cursor")
+  if not include_deleted:
+    query["deleted_at"] = {"$exists": False}
+  if cursor:
+    try:
+      query["_id"] = {"$lt": as_object_id(cursor)}
+    except ValueError:
+      raise HTTPException(status_code=400, detail="Некорректный cursor")
 
-    # Используем индекс для быстрой сортировки
-    docs = await (
-      db.orders.find(query)
-      .sort("_id", -1)
+  # Используем индекс для быстрой сортировки
+  docs = await (
+    db.orders.find(query)
+    .sort("_id", -1)
     .hint([("status", 1), ("created_at", -1)])
-      .limit(limit + 1)
-      .to_list(length=limit + 1)
-    )
+    .limit(limit + 1)
+    .to_list(length=limit + 1)
+  )
   
   # Оптимизированная валидация заказов
-    orders = []
-    for doc in docs:
-      try:
+  orders = []
+  for doc in docs:
+    try:
       orders.append(Order(**serialize_doc(doc) | {"id": str(doc["_id"])}))
     except:
-        continue
+      continue
 
-    next_cursor = None
-    if len(orders) > limit:
+  next_cursor = None
+  if len(orders) > limit:
     next_cursor = orders[limit].id
     orders = orders[:limit]
-    return PaginatedOrdersResponse(orders=orders, next_cursor=next_cursor)
+  return PaginatedOrdersResponse(orders=orders, next_cursor=next_cursor)
 
 
 @router.get("/admin/order/{order_id}", response_model=Order)

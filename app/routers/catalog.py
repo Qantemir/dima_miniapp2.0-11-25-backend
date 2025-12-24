@@ -117,23 +117,23 @@ async def _load_catalog_from_db(db: AsyncIOMotorDatabase, only_available: bool =
         continue
       
       # Быстрая обработка цены
-    price = doc.get("price", 0.0)
-    if not isinstance(price, (int, float)):
-      price = float(price) if price else 0.0
+      price = doc.get("price", 0.0)
+      if not isinstance(price, (int, float)):
+        price = float(price) if price else 0.0
       
-    # Собираем данные товара (минимальная валидация)
-    product_data: dict = {
+      # Собираем данные товара (минимальная валидация)
+      product_data: dict = {
         "id": str(doc["_id"]),
         "name": name,
         "price": price,
         "category_id": str(category_id) if not isinstance(category_id, str) else category_id,
-      "available": bool(doc.get("available", True)),
+        "available": bool(doc.get("available", True)),
       }
       
       # Опциональные поля добавляем только если они есть
       if "description" in doc and doc["description"]:
-      desc = doc["description"]
-      product_data["description"] = desc[:300] if isinstance(desc, str) and len(desc) > 300 else desc
+        desc = doc["description"]
+        product_data["description"] = desc[:300] if isinstance(desc, str) and len(desc) > 300 else desc
       if "image" in doc:
         product_data["image"] = doc["image"]
       if "images" in doc:
@@ -141,12 +141,12 @@ async def _load_catalog_from_db(db: AsyncIOMotorDatabase, only_available: bool =
       if "variants" in doc:
         product_data["variants"] = doc["variants"]
       
-    # Прямое создание без try-catch для скорости
-    try:
-      products.append(Product(**product_data))
-    except:
-      # Пропускаем некорректные товары без логирования в production
-      continue
+      # Прямое создание без try-catch для скорости
+      try:
+        products.append(Product(**product_data))
+      except:
+        # Пропускаем некорректные товары без логирования в production
+        continue
   
   return CatalogResponse(categories=categories, products=products)
 
@@ -319,7 +319,7 @@ async def invalidate_catalog_cache(db: AsyncIOMotorDatabase | None = None):
   except Exception as e:
     # Убираем debug логи в production
     if settings.environment != "production":
-    logger.debug(f"Ошибка очистки Redis кэша: {e}")
+      logger.debug(f"Ошибка очистки Redis кэша: {e}")
 
   if db is not None:
     _catalog_cache_version = await _bump_catalog_cache_version(db)
@@ -505,7 +505,7 @@ async def create_category(
   await invalidate_catalog_cache(db)
   await _refresh_catalog_cache(db)
   if settings.environment != "production":
-  logger.info("Admin %s created category %s (%s)", _admin_id, doc.get("name"), doc.get("_id"))
+    logger.info("Admin %s created category %s (%s)", _admin_id, doc.get("name"), doc.get("_id"))
   return Category(**serialize_doc(doc) | {"id": str(doc["_id"])})
 
 
@@ -546,7 +546,7 @@ async def update_category(
   await invalidate_catalog_cache(db)
   await _refresh_catalog_cache(db)
   if settings.environment != "production":
-  logger.info("Admin %s updated category %s (%s)", _admin_id, result.get("name"), result.get("_id"))
+    logger.info("Admin %s updated category %s (%s)", _admin_id, result.get("name"), result.get("_id"))
   return Category(**serialize_doc(result) | {"id": str(result["_id"])})
 
 
@@ -579,13 +579,13 @@ async def delete_category(
   await invalidate_catalog_cache(db)
   await _refresh_catalog_cache(db)
   if settings.environment != "production":
-  logger.info(
-    "Admin %s deleted category %s (%s) cleanup_values=%s",
-    _admin_id,
-    category_doc.get("name"),
-    category_doc.get("_id"),
-    list(cleanup_values),
-  )
+    logger.info(
+      "Admin %s deleted category %s (%s) cleanup_values=%s",
+      _admin_id,
+      category_doc.get("name"),
+      category_doc.get("_id"),
+      list(cleanup_values),
+    )
   return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

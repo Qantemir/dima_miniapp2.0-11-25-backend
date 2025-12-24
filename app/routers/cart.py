@@ -116,10 +116,10 @@ async def get_cart_document(db: AsyncIOMotorDatabase, user_id: int, check_expiry
     # Оптимизированная проверка истечения
     updated_at = cart.get("updated_at") or cart.get("created_at", datetime.utcnow())
     if not isinstance(updated_at, datetime):
-    if isinstance(updated_at, str):
-      try:
-        updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
-      except:
+      if isinstance(updated_at, str):
+        try:
+          updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+        except:
           updated_at = datetime.utcnow()
       else:
         updated_at = datetime.utcnow()
@@ -345,7 +345,7 @@ async def add_to_cart(
     raise HTTPException(status_code=500, detail="Ошибка при обновлении корзины")
   
   # Обновление клиента в фоне (fire-and-forget для скорости)
-    try:
+  try:
     asyncio.create_task(
       db.customers.update_one(
         {"telegram_id": user_id},
