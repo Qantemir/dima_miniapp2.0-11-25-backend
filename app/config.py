@@ -29,8 +29,38 @@ class Settings(BaseSettings):
   max_receipt_size_mb: int = Field(10, env="MAX_RECEIPT_SIZE_MB")
   telegram_data_ttl_seconds: int = Field(300, env="TELEGRAM_DATA_TTL_SECONDS")
   allow_dev_requests: bool = Field(True, env="ALLOW_DEV_REQUESTS")
-  dev_allowed_user_ids: List[int] = Field(default_factory=list, env="DEV_ALLOWED_USER_IDS")
+  _dev_allowed_user_ids_str: str | None = Field(None, env="DEV_ALLOWED_USER_IDS")
   default_dev_user_id: int | None = Field(1, env="DEFAULT_DEV_USER_ID")
+  
+  @property
+  def dev_allowed_user_ids(self) -> List[int]:
+    """Преобразует dev_allowed_user_ids в List[int]"""
+    value = self._dev_allowed_user_ids_str
+    if value is None:
+      return []
+    value = value.strip()
+    if not value:
+      return []
+    # Пытаемся разобрать как JSON
+    try:
+      import json
+      parsed = json.loads(value)
+      if isinstance(parsed, list):
+        return [int(v) for v in parsed if v is not None]
+    except (json.JSONDecodeError, ValueError, TypeError):
+      pass
+    # Разбиваем по запятой
+    ids = []
+    for v in value.split(","):
+      v = v.strip()
+      if v:
+        try:
+          ids.append(int(v))
+        except ValueError:
+          import logging
+          logger = logging.getLogger(__name__)
+          logger.warning(f"Некорректное значение в DEV_ALLOWED_USER_IDS: '{v}', пропускаем")
+    return ids
   enforce_telegram_signature: bool = Field(False, env="ENFORCE_TELEGRAM_SIGNATURE")
   catalog_cache_ttl_seconds: int = Field(600, env="CATALOG_CACHE_TTL_SECONDS")  # 10 минут для максимальной производительности
   broadcast_batch_size: int = Field(25, env="BROADCAST_BATCH_SIZE")
@@ -110,18 +140,6 @@ class Settings(BaseSettings):
       return value
     return Path(value)
 
-  @validator("dev_allowed_user_ids", pre=True)
-  def split_dev_ids(cls, value):
-    if value is None:
-      return []
-    if isinstance(value, str):
-      value = value.strip()
-      if not value:
-        return []
-      return [int(v.strip()) for v in value.split(",") if v.strip()]
-    if isinstance(value, list):
-      return [int(v) for v in value]
-    return []
 
   class Config:
     env_file = ENV_PATH
