@@ -78,6 +78,66 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         content={"detail": exc.detail}
     )
 
+# Глобальный обработчик ВСЕХ исключений для критичных эндпоинтов
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Обрабатывает все исключения и возвращает fallback значения для критичных эндпоинтов"""
+    logger = logging.getLogger(__name__)
+    path = request.url.path
+    
+    # Логируем ошибку
+    logger.error(f"Необработанное исключение для {path}: {type(exc).__name__}: {exc}", exc_info=True)
+    
+    # Для критичных эндпоинтов возвращаем fallback вместо 500
+    if path == "/api/store/status":
+        logger.warning(f"Ошибка для {path}, возвращаем fallback статус")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "is_sleep_mode": False,
+                "sleep_message": None,
+                "sleep_until": None,
+                "payment_link": None,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+        )
+    
+    if path == "/api/catalog":
+        logger.warning(f"Ошибка для {path}, возвращаем пустой каталог")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "categories": [],
+                "products": [],
+            }
+        )
+    
+    if path == "/api/store/status/stream":
+        logger.warning(f"Ошибка для {path}, возвращаем fallback стрим")
+        from fastapi.responses import StreamingResponse
+        import json
+        
+        async def fallback_stream():
+            fallback_data = {
+                "is_sleep_mode": False,
+                "sleep_message": None,
+                "sleep_until": None,
+                "payment_link": None,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            yield f"event: status\ndata: {json.dumps(fallback_data, ensure_ascii=False)}\n\n"
+            await asyncio.sleep(0.1)
+        
+        response = StreamingResponse(fallback_stream(), media_type="text/event-stream")
+        response.headers["Content-Encoding"] = "identity"
+        return response
+    
+    # Для остальных эндпоинтов возвращаем стандартную ошибку 500
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"}
+    )
+
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import StreamingResponse, Response
 from starlette.concurrency import iterate_in_threadpool
