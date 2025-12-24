@@ -171,7 +171,19 @@ async def get_cart(
     user_id = current_user.id
     cart = await get_cart_document(db, user_id, check_expiry=True)
     safe_cart = normalize_cart(cart)
-    return Cart(**serialize_doc(safe_cart) | {"id": str(cart["_id"])})
+    
+    # Сериализуем документ и убеждаемся, что _id правильно обработан
+    serialized = serialize_doc(safe_cart)
+    cart_id = str(cart.get("_id", ""))
+    if not cart_id or cart_id == "None":
+        raise HTTPException(status_code=500, detail="Ошибка: корзина не имеет идентификатора")
+    
+    # Создаем модель Cart, исключая служебные поля, которые не нужны в ответе
+    cart_data = {k: v for k, v in serialized.items() if k not in ("_id", "created_at", "updated_at")}
+    cart_data["id"] = cart_id
+    cart_data["user_id"] = user_id
+    
+    return Cart(**cart_data)
 
 
 @router.post("/cart", response_model=Cart)

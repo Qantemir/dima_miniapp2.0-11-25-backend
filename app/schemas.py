@@ -254,9 +254,7 @@ class StoreStatus(BaseModel):
 
     is_sleep_mode: bool = False
     sleep_message: Optional[str] = None
-    sleep_until: Optional[datetime] = None
-    payment_link: Optional[str] = None
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    # sleep_until и payment_link убраны, т.к. не используются
 
 
 class StoreSleepRequest(BaseModel):
@@ -264,16 +262,10 @@ class StoreSleepRequest(BaseModel):
 
     sleep: bool
     message: Optional[str] = None
-    sleep_until: Optional[datetime] = None
+    # sleep_until убран, т.к. не используется
 
 
-class PaymentLinkRequest(BaseModel):
-    """PaymentLinkRequest модель."""
-
-    url: Optional[AnyHttpUrl] = Field(
-        default=None,
-        description="Ссылка на страницу оплаты (например, Kaspi Pay)",
-    )
+# PaymentLinkRequest удален, т.к. payment_link больше не используется
 
 
 class PaginatedOrdersResponse(BaseModel):

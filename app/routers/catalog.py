@@ -239,9 +239,12 @@ async def fetch_catalog(
     # Если БД недоступна, возвращаем пустой каталог или кеш
     if db is None:
         if _catalog_cache is not None and _catalog_cache_etag is not None:
-            logger.warning("БД недоступна, возвращаем кешированный каталог")
+            # Убрали warning логи для производительности в production
+            if settings.environment != "production":
+                logger.warning("БД недоступна, возвращаем кешированный каталог")
             return _catalog_cache, _catalog_cache_etag
-        logger.warning("БД недоступна, возвращаем пустой каталог")
+        if settings.environment != "production":
+            logger.warning("БД недоступна, возвращаем пустой каталог")
         empty_catalog = CatalogResponse(categories=[], products=[])
         return empty_catalog, "empty-catalog"
 
@@ -267,7 +270,9 @@ async def fetch_catalog(
     try:
         current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
     except Exception as e:
-        logger.warning(f"Ошибка при получении версии каталога: {e}, возвращаем кеш или пустой каталог")
+        # Убрали warning логи для производительности в production
+        if settings.environment != "production":
+            logger.warning(f"Ошибка при получении версии каталога: {e}, возвращаем кеш или пустой каталог")
         if _catalog_cache is not None and _catalog_cache_etag is not None:
             return _catalog_cache, _catalog_cache_etag
         empty_catalog = CatalogResponse(categories=[], products=[])
@@ -292,7 +297,9 @@ async def fetch_catalog(
             try:
                 current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
             except Exception as version_error:
-                logger.warning(f"Ошибка при получении версии каталога: {version_error}, используем текущую версию")
+                # Убрали warning логи для производительности в production
+                if settings.environment != "production":
+                    logger.warning(f"Ошибка при получении версии каталога: {version_error}, используем текущую версию")
                 current_version = _catalog_cache_version or "unknown"
 
             now = datetime.utcnow()
@@ -312,7 +319,9 @@ async def fetch_catalog(
                 data = await _load_catalog_from_db(db, only_available=only_available)
                 etag = _compute_catalog_etag(data)
             except Exception as load_error:
-                logger.warning(f"Ошибка при загрузке каталога из БД: {load_error}, возвращаем кеш или пустой каталог")
+                # Убрали warning логи для производительности в production
+                if settings.environment != "production":
+                    logger.warning(f"Ошибка при загрузке каталога из БД: {load_error}, возвращаем кеш или пустой каталог")
                 if _catalog_cache is not None and _catalog_cache_etag is not None:
                     return _catalog_cache, _catalog_cache_etag
                 empty_catalog = CatalogResponse(categories=[], products=[])
@@ -461,14 +470,17 @@ async def get_catalog(
                 return _build_not_modified_response(etag)
             return _build_catalog_response(catalog, etag)
         except Exception as fetch_error:
-            logger.warning(f"Ошибка при загрузке каталога из БД: {fetch_error}, возвращаем пустой каталог")
+            # Убрали warning логи для производительности в production
+            if settings.environment != "production":
+                logger.warning(f"Ошибка при загрузке каталога из БД: {fetch_error}, возвращаем пустой каталог")
             empty_catalog = CatalogResponse(categories=[], products=[])
             etag = "error-catalog-fallback"
             return _build_catalog_response(empty_catalog, etag)
         except HTTPException as e:
             # Если БД недоступна, возвращаем пустой каталог вместо ошибки
             if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
-                logger.warning(f"БД недоступна, возвращаем пустой каталог: {e.detail}")
+                if settings.environment != "production":
+                    logger.warning(f"БД недоступна, возвращаем пустой каталог: {e.detail}")
                 empty_catalog = CatalogResponse(categories=[], products=[])
                 etag = "empty-catalog"
                 return _build_catalog_response(empty_catalog, etag)

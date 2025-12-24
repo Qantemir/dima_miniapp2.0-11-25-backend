@@ -44,16 +44,24 @@ def get_gridfs() -> GridFS:
 
 def serialize_doc(doc):
     """Оптимизированная сериализация документ."""
+    from datetime import datetime
+    
     if not doc:
         return doc
     result = {}
     for key, value in doc.items():
         if isinstance(value, ObjectId):
             result[key] = str(value)
+        elif isinstance(value, datetime):
+            result[key] = value.isoformat()
         elif isinstance(value, list):
             # Оптимизированная обработка списков
             result[key] = [
-                serialize_doc(item) if isinstance(item, dict) else (str(item) if isinstance(item, ObjectId) else item)
+                serialize_doc(item) if isinstance(item, dict) else (
+                    str(item) if isinstance(item, ObjectId) else (
+                        item.isoformat() if isinstance(item, datetime) else item
+                    )
+                )
                 for item in value
             ]
         elif isinstance(value, dict):

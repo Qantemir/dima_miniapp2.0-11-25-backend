@@ -45,8 +45,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
                 content={
                     "is_sleep_mode": False,
                     "sleep_message": None,
-                    "sleep_until": None,
-                    "payment_link": None,
                     "updated_at": datetime.utcnow().isoformat(),
                 },
             )
@@ -70,8 +68,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
                 fallback_data = {
                     "is_sleep_mode": False,
                     "sleep_message": None,
-                    "sleep_until": None,
-                    "payment_link": None,
                     "updated_at": datetime.utcnow().isoformat(),
                 }
                 yield f"event: status\ndata: {json.dumps(fallback_data, ensure_ascii=False)}\n\n"
@@ -289,15 +285,7 @@ public_dir = (
 if public_dir.exists():
     if settings.environment != "production":
         logger.info(f"✅ Mounting public files from: {public_dir}")
-    # Монтируем favicon
-
-    @app.get("/favicon.svg")
-    async def favicon():
-        """Serve favicon."""
-        favicon_path = public_dir / "favicon.svg"
-        if favicon_path.exists():
-            return FileResponse(str(favicon_path))
-        raise HTTPException(status_code=404)
+    # Favicon убран, так как приложение используется только в Telegram WebView
 
 
 @app.middleware("http")
