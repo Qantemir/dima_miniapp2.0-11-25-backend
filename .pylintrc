@@ -1,0 +1,49 @@
+[MASTER]
+# Используем 2 пробела для отступов
+indent-string='  '
+# Игнорируем некоторые директории
+ignore=venv,__pycache__,migrations
+
+[MESSAGES CONTROL]
+# Отключаем некоторые слишком строгие проверки
+disable=
+    missing-module-docstring,
+    missing-class-docstring,
+    missing-function-docstring,
+    too-few-public-methods,
+    too-many-arguments,
+    too-many-locals,
+    too-many-branches,
+    too-many-statements,
+    import-outside-toplevel
+
+[FORMAT]
+# Максимальная длина строки
+max-line-length=120
+# Стиль именования
+module-naming-style=snake_case
+const-naming-style=UPPER_CASE
+class-naming-style=PascalCase
+function-naming-style=snake_case
+method-naming-style=snake_case
+
+[DESIGN]
+# Максимальное количество аргументов функции
+max-args=10
+# Максимальное количество атрибутов класса
+max-attributes=15
+# Максимальное количество методов класса
+max-methods=20
+# Максимальное количество локальных переменных
+max-locals=20
+# Максимальное количество возвращаемых значений
+max-returns=6
+# Максимальное количество веток
+max-branches=15
+# Максимальное количество операторов
+max-statements=60
+
+[IMPORTS]
+# Игнорируем импорты, которые не могут быть найдены
+ignore-imports=yes
+

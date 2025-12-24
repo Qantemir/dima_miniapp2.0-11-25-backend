@@ -1,0 +1,23 @@
+{
+  "name": "backend-linting",
+  "version": "1.0.0",
+  "description": "Python linting scripts (wrapper for convenience)",
+  "license": "MIT",
+  "scripts": {
+    "install-dev": "python3 -m venv venv 2>/dev/null || true && ./venv/bin/pip install -r requirements-dev.txt && echo '✅ Установка завершена! Активируйте venv: source venv/bin/activate'",
+    "install-dev:user": "pip3 install --break-system-packages -r requirements-dev.txt 2>/dev/null || pip3 install --user -r requirements-dev.txt || echo '⚠️  Используйте виртуальное окружение: yarn install-dev'",
+    "lint": "if [ -f ./venv/bin/python ]; then ./venv/bin/python -m flake8 app/ --config=.flake8; else python3 -m flake8 app/ --config=.flake8 || echo '⚠️  flake8 не установлен. Запустите: yarn install-dev'; fi",
+    "pylint": "if [ -f ./venv/bin/python ]; then ./venv/bin/python -m pylint app/ --rcfile=.pylintrc; else python3 -m pylint app/ --rcfile=.pylintrc || echo '⚠️  pylint не установлен. Запустите: yarn install-dev'; fi",
+    "type-check": "if [ -f ./venv/bin/python ]; then ./venv/bin/python -m mypy app/ --config-file=.mypy.ini; else python3 -m mypy app/ --config-file=.mypy.ini || echo '⚠️  mypy не установлен. Запустите: yarn install-dev'; fi",
+    "format": "if [ -f ./venv/bin/python ]; then ./venv/bin/python -m black app/ --config=pyproject.toml && ./venv/bin/python -m isort app/ --settings-file=pyproject.toml; else python3 -m black app/ --config=pyproject.toml && python3 -m isort app/ --settings-file=pyproject.toml || echo '⚠️  black/isort не установлены. Запустите: yarn install-dev'; fi",
+    "format:check": "if [ -f ./venv/bin/python ]; then ./venv/bin/python -m black app/ --check --config=pyproject.toml && ./venv/bin/python -m isort app/ --check-only --settings-file=pyproject.toml; else python3 -m black app/ --check --config=pyproject.toml && python3 -m isort app/ --check-only --settings-file=pyproject.toml || echo '⚠️  black/isort не установлены. Запустите: yarn install-dev'; fi",
+    "check": "yarn run lint && yarn run pylint && yarn run type-check && yarn run format:check",
+    "quick-check": "if [ -f ./venv/bin/python ]; then ./venv/bin/python -m flake8 app/ --config=.flake8 --count --statistics; else python3 -m flake8 app/ --config=.flake8 --count --statistics || echo '⚠️  flake8 не установлен. Запустите: yarn install-dev'; fi",
+    "verify": "yarn run lint && yarn run pylint && yarn run type-check && yarn run format:check"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=14"
+  }
+}
+
