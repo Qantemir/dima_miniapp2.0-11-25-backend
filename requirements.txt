@@ -1,5 +1,4 @@
 # Backend dependencies
-# Fixed pymongo version to 4.9.0 for motor 3.6.0 compatibility
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 pymongo==4.9.0
