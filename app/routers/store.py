@@ -351,20 +351,20 @@ async def stream_store_status(
             )
             await queue.put(_serialize_store_status(fallback_status))
 
-        async def event_generator():
-            try:
-                while True:
-                    data = await queue.get()
-                    yield f"event: status\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-            except asyncio.CancelledError:
-                pass
-            finally:
-                store_status_broadcaster.unregister(queue)
+    async def event_generator():
+        try:
+            while True:
+                data = await queue.get()
+                yield f"event: status\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            pass
+        finally:
+            store_status_broadcaster.unregister(queue)
 
-        response = StreamingResponse(event_generator(), media_type="text/event-stream")
-        # Явно отключаем gzip для SSE, чтобы избежать ошибок с закрытыми файлами
-        response.headers["Content-Encoding"] = "identity"
-        return response
+    response = StreamingResponse(event_generator(), media_type="text/event-stream")
+    # Явно отключаем gzip для SSE, чтобы избежать ошибок с закрытыми файлами
+    response.headers["Content-Encoding"] = "identity"
+    return response
 
 
 @router.patch("/admin/store/payment-link", response_model=StoreStatus)

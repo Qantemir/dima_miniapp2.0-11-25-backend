@@ -240,7 +240,7 @@ async def fetch_catalog(
     if db is None:
         if _catalog_cache is not None and _catalog_cache_etag is not None:
             logger.warning("БД недоступна, возвращаем кешированный каталог")
-        return _catalog_cache, _catalog_cache_etag
+            return _catalog_cache, _catalog_cache_etag
         logger.warning("БД недоступна, возвращаем пустой каталог")
         empty_catalog = CatalogResponse(categories=[], products=[])
         return empty_catalog, "empty-catalog"

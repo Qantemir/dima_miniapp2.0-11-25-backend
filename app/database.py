@@ -82,13 +82,14 @@ async def get_db() -> Optional[AsyncIOMotorDatabase]:
             logger.info("Подключение к базе данных...")
             await ensure_db_connection()
 
-        if db is None:
+        if db is None or client is None:
             logger.warning("База данных не инициализирована после попытки подключения")
             return None
 
         # Проверяем, что подключение действительно работает (без блокировки, быстро)
         try:
-            await asyncio.wait_for(client.admin.command("ping"), timeout=2.0)
+            if client is not None:
+                await asyncio.wait_for(client.admin.command("ping"), timeout=2.0)
         except (asyncio.TimeoutError, Exception) as ping_error:
             logger.warning(f"Ping к MongoDB не прошел: {ping_error}, пытаемся переподключиться...")
             try:
