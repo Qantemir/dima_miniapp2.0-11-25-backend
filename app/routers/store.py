@@ -201,13 +201,27 @@ async def get_store_status(db: AsyncIOMotorDatabase = Depends(get_db)):
         logger.debug("StoreStatus модель создана успешно")
         return result
     except HTTPException as e:
+        # Если это 503 (БД недоступна), возвращаем fallback вместо ошибки
+        if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+            logger.warning(f"БД недоступна, возвращаем fallback статус: {e.detail}")
+            return StoreStatus(
+                is_sleep_mode=False,
+                sleep_message=None,
+                sleep_until=None,
+                payment_link=None,
+                updated_at=datetime.utcnow(),
+            )
         logger.error(f"HTTPException при получении статуса магазина: {e.status_code} - {e.detail}")
         raise
     except Exception as e:
         logger.error(f"Ошибка при получении статуса магазина: {type(e).__name__}: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Ошибка при получении статуса магазина: {str(e)}"
+        # Возвращаем fallback вместо 500, чтобы фронтенд не падал
+        return StoreStatus(
+            is_sleep_mode=False,
+            sleep_message=None,
+            sleep_until=None,
+            payment_link=None,
+            updated_at=datetime.utcnow(),
         )
 
 
@@ -253,11 +267,26 @@ async def stream_store_status(
   request: Request,
   db: AsyncIOMotorDatabase = Depends(get_db),
 ):
+  import logging
+  logger = logging.getLogger(__name__)
   try:
     queue = store_status_broadcaster.register()
-    current_doc = await get_or_create_store_status(db)
-    normalized_doc = _normalize_store_status_doc(current_doc)
-    await queue.put(_serialize_store_status(StoreStatus(**normalized_doc)))
+    try:
+      current_doc = await get_or_create_store_status(db)
+      normalized_doc = _normalize_store_status_doc(current_doc)
+      status_model = StoreStatus(**normalized_doc)
+      await queue.put(_serialize_store_status(status_model))
+    except Exception as init_error:
+      logger.warning(f"Ошибка при инициализации стрима, отправляем fallback: {init_error}")
+      # Отправляем fallback статус
+      fallback_status = StoreStatus(
+        is_sleep_mode=False,
+        sleep_message=None,
+        sleep_until=None,
+        payment_link=None,
+        updated_at=datetime.utcnow(),
+      )
+      await queue.put(_serialize_store_status(fallback_status))
 
     async def event_generator():
       try:
@@ -273,16 +302,59 @@ async def stream_store_status(
     # Явно отключаем gzip для SSE, чтобы избежать ошибок с закрытыми файлами
     response.headers["Content-Encoding"] = "identity"
     return response
-  except HTTPException:
+  except HTTPException as e:
+    if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+      # Для недоступной БД все равно возвращаем стрим с fallback
+      queue = store_status_broadcaster.register()
+      fallback_status = StoreStatus(
+        is_sleep_mode=False,
+        sleep_message=None,
+        sleep_until=None,
+        payment_link=None,
+        updated_at=datetime.utcnow(),
+      )
+      await queue.put(_serialize_store_status(fallback_status))
+      
+      async def event_generator():
+        try:
+          while True:
+            data = await queue.get()
+            yield f"event: status\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+          pass
+        finally:
+          store_status_broadcaster.unregister(queue)
+      
+      response = StreamingResponse(event_generator(), media_type="text/event-stream")
+      response.headers["Content-Encoding"] = "identity"
+      return response
     raise
   except Exception as e:
-    import logging
-    logger = logging.getLogger(__name__)
     logger.error(f"Ошибка при создании стрима статуса магазина: {e}", exc_info=True)
-    raise HTTPException(
-      status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-      detail=f"Ошибка при создании стрима статуса магазина: {str(e)}"
+    # Все равно возвращаем стрим с fallback
+    queue = store_status_broadcaster.register()
+    fallback_status = StoreStatus(
+      is_sleep_mode=False,
+      sleep_message=None,
+      sleep_until=None,
+      payment_link=None,
+      updated_at=datetime.utcnow(),
     )
+    await queue.put(_serialize_store_status(fallback_status))
+    
+    async def event_generator():
+      try:
+        while True:
+          data = await queue.get()
+          yield f"event: status\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+      except asyncio.CancelledError:
+        pass
+      finally:
+        store_status_broadcaster.unregister(queue)
+    
+    response = StreamingResponse(event_generator(), media_type="text/event-stream")
+    response.headers["Content-Encoding"] = "identity"
+    return response
 
 
 @router.patch("/admin/store/payment-link", response_model=StoreStatus)

@@ -402,33 +402,45 @@ async def get_catalog(
         pass
     
     # Если нет в Redis, используем стандартный кэш
-    catalog, etag = await fetch_catalog(db)
-    
-    # Сохраняем в Redis для следующего раза (без блокировки ответа)
     try:
-      catalog_dict = _catalog_to_dict(catalog)
-      if HAS_ORJSON:
-        catalog_bytes = orjson.dumps(catalog_dict, option=orjson.OPT_SERIALIZE_NUMPY)
-      else:
-        catalog_bytes = orjson.dumps(catalog_dict).encode('utf-8')
-      # Сохраняем асинхронно без ожидания для максимальной скорости ответа
-      asyncio.create_task(cache_set(cache_key, catalog_bytes, ttl=settings.catalog_cache_ttl_seconds))
-      asyncio.create_task(cache_set(f"{cache_key}:etag", etag.encode('utf-8'), ttl=settings.catalog_cache_ttl_seconds))
-    except:
-      pass  # Игнорируем ошибки сохранения кэша для скорости
-    
-    if if_none_match and if_none_match == etag:
-      return _build_not_modified_response(etag)
-    return _build_catalog_response(catalog, etag)
+      catalog, etag = await fetch_catalog(db)
+      
+      # Сохраняем в Redis для следующего раза (без блокировки ответа)
+      try:
+        catalog_dict = _catalog_to_dict(catalog)
+        if HAS_ORJSON:
+          catalog_bytes = orjson.dumps(catalog_dict, option=orjson.OPT_SERIALIZE_NUMPY)
+        else:
+          catalog_bytes = orjson.dumps(catalog_dict).encode('utf-8')
+        # Сохраняем асинхронно без ожидания для максимальной скорости ответа
+        asyncio.create_task(cache_set(cache_key, catalog_bytes, ttl=settings.catalog_cache_ttl_seconds))
+        asyncio.create_task(cache_set(f"{cache_key}:etag", etag.encode('utf-8'), ttl=settings.catalog_cache_ttl_seconds))
+      except:
+        pass  # Игнорируем ошибки сохранения кэша для скорости
+      
+      if if_none_match and if_none_match == etag:
+        return _build_not_modified_response(etag)
+      return _build_catalog_response(catalog, etag)
+    except Exception as fetch_error:
+      logger.warning(f"Ошибка при загрузке каталога из БД: {fetch_error}, возвращаем пустой каталог")
+      empty_catalog = CatalogResponse(categories=[], products=[])
+      etag = "error-catalog-fallback"
+      return _build_catalog_response(empty_catalog, etag)
   except HTTPException as e:
+    # Если БД недоступна, возвращаем пустой каталог вместо ошибки
+    if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+      logger.warning(f"БД недоступна, возвращаем пустой каталог: {e.detail}")
+      empty_catalog = CatalogResponse(categories=[], products=[])
+      etag = "empty-catalog"
+      return _build_catalog_response(empty_catalog, etag)
     logger.error(f"HTTPException при получении каталога: {e.status_code} - {e.detail}")
     raise
   except Exception as e:
     logger.error(f"Ошибка при получении каталога: {type(e).__name__}: {e}", exc_info=True)
-    raise HTTPException(
-      status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-      detail=f"Ошибка при получении каталога: {str(e)}"
-    )
+    # Возвращаем пустой каталог вместо 500, чтобы фронтенд не падал
+    empty_catalog = CatalogResponse(categories=[], products=[])
+    etag = "error-catalog"
+    return _build_catalog_response(empty_catalog, etag)
 
 
 @router.get("/admin/catalog", response_model=CatalogResponse)
