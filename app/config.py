@@ -1,6 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import List
+from typing import List, Union, cast
 import os
 
 from pydantic import Field, validator
@@ -29,38 +29,8 @@ class Settings(BaseSettings):
   max_receipt_size_mb: int = Field(10, env="MAX_RECEIPT_SIZE_MB")
   telegram_data_ttl_seconds: int = Field(300, env="TELEGRAM_DATA_TTL_SECONDS")
   allow_dev_requests: bool = Field(True, env="ALLOW_DEV_REQUESTS")
-  _dev_allowed_user_ids_str: str | None = Field(None, env="DEV_ALLOWED_USER_IDS")
+  dev_allowed_user_ids: Any = Field(default_factory=list, env="DEV_ALLOWED_USER_IDS")
   default_dev_user_id: int | None = Field(1, env="DEFAULT_DEV_USER_ID")
-  
-  @property
-  def dev_allowed_user_ids(self) -> List[int]:
-    """Преобразует dev_allowed_user_ids в List[int]"""
-    value = self._dev_allowed_user_ids_str
-    if value is None:
-      return []
-    value = value.strip()
-    if not value:
-      return []
-    # Пытаемся разобрать как JSON
-    try:
-      import json
-      parsed = json.loads(value)
-      if isinstance(parsed, list):
-        return [int(v) for v in parsed if v is not None]
-    except (json.JSONDecodeError, ValueError, TypeError):
-      pass
-    # Разбиваем по запятой
-    ids = []
-    for v in value.split(","):
-      v = v.strip()
-      if v:
-        try:
-          ids.append(int(v))
-        except ValueError:
-          import logging
-          logger = logging.getLogger(__name__)
-          logger.warning(f"Некорректное значение в DEV_ALLOWED_USER_IDS: '{v}', пропускаем")
-    return ids
   enforce_telegram_signature: bool = Field(False, env="ENFORCE_TELEGRAM_SIGNATURE")
   catalog_cache_ttl_seconds: int = Field(600, env="CATALOG_CACHE_TTL_SECONDS")  # 10 минут для максимальной производительности
   broadcast_batch_size: int = Field(25, env="BROADCAST_BATCH_SIZE")
@@ -139,6 +109,44 @@ class Settings(BaseSettings):
     if isinstance(value, Path):
       return value
     return Path(value)
+
+  @validator("dev_allowed_user_ids", pre=True, always=True)
+  def split_dev_allowed_user_ids(cls, value):
+    """Валидатор для обработки dev_allowed_user_ids из env переменной"""
+    # Обрабатываем None и пустые значения
+    if value is None:
+      return []
+    # Если это уже список, возвращаем как есть
+    if isinstance(value, list):
+      return [int(v) for v in value if v is not None]
+    # Обрабатываем строку
+    if isinstance(value, str):
+      str_value = value.strip()
+      if not str_value:
+        return []
+      # Пытаемся разобрать как JSON
+      try:
+        import json
+        parsed = json.loads(str_value)
+        if isinstance(parsed, list):
+          return [int(v) for v in parsed if v is not None]
+      except (json.JSONDecodeError, ValueError, TypeError):
+        # Если не JSON, разбираем как строку с запятыми
+        pass
+      # Разбиваем по запятой
+      ids = []
+      for v in str_value.split(","):
+        v = v.strip()
+        if v:
+          try:
+            ids.append(int(v))
+          except ValueError:
+            # Логируем, но не падаем - просто пропускаем некорректное значение
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Некорректное значение в DEV_ALLOWED_USER_IDS: '{v}', пропускаем")
+      return ids
+    return []
 
 
   class Config:
