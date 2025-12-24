@@ -1,11 +1,12 @@
 [MASTER]
-# Используем 2 пробела для отступов
-indent-string='  '
 # Игнорируем некоторые директории
 ignore=venv,__pycache__,migrations
 
 [MESSAGES CONTROL]
 # Отключаем некоторые слишком строгие проверки
+# bad-indentation отключен, так как flake8 уже проверяет отступы (4 пробела по PEP 8)
+# import-error отключен, так как pylint не может найти пакеты в venv
+# no-self-argument отключен для поддержки Pydantic validators (@validator использует cls вместо self)
 disable=
     missing-module-docstring,
     missing-class-docstring,
@@ -15,7 +16,10 @@ disable=
     too-many-locals,
     too-many-branches,
     too-many-statements,
-    import-outside-toplevel
+    import-outside-toplevel,
+    bad-indentation,
+    import-error,
+    no-self-argument
 
 [FORMAT]
 # Максимальная длина строки
@@ -32,8 +36,6 @@ method-naming-style=snake_case
 max-args=10
 # Максимальное количество атрибутов класса
 max-attributes=15
-# Максимальное количество методов класса
-max-methods=20
 # Максимальное количество локальных переменных
 max-locals=20
 # Максимальное количество возвращаемых значений

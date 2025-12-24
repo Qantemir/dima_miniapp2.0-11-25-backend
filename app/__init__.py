@@ -13,6 +13,8 @@ from typing import ForwardRef
 
 def _patch_forward_ref_for_py313():
     """
+    Patch ForwardRef for Python 3.13+ compatibility.
+
     Python 3.12+ changed ``typing.ForwardRef._evaluate`` signature and made the
     ``recursive_guard`` argument mandatory. Pydantic 1.x still calls the method
     without that keyword which breaks FastAPI import.
@@ -20,7 +22,6 @@ def _patch_forward_ref_for_py313():
     To keep existing schemas working we wrap the original method with a shim
     that provides a default value when FastAPI / pydantic call it.
     """
-
     if sys.version_info < (3, 12):
         return
 
@@ -61,4 +62,3 @@ def _patch_forward_ref_for_py313():
 
 
 _patch_forward_ref_for_py313()
-
