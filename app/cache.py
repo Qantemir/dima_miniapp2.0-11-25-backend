@@ -62,7 +62,7 @@ async def cache_get(key: str) -> Optional[bytes]:
         # Убираем debug логи в production
         from .config import settings
         if settings.environment != "production":
-        logger.debug(f"Ошибка получения из кэша {key}: {e}")
+            logger.debug(f"Ошибка получения из кэша {key}: {e}")
     return None
 
 
@@ -77,7 +77,7 @@ async def cache_set(key: str, value: bytes, ttl: int = 300) -> bool:
         # Убираем debug логи в production
         from .config import settings
         if settings.environment != "production":
-        logger.debug(f"Ошибка сохранения в кэш {key}: {e}")
+            logger.debug(f"Ошибка сохранения в кэш {key}: {e}")
     return False
 
 
@@ -92,7 +92,7 @@ async def cache_delete(key: str) -> bool:
         # Убираем debug логи в production
         from .config import settings
         if settings.environment != "production":
-        logger.debug(f"Ошибка удаления из кэша {key}: {e}")
+            logger.debug(f"Ошибка удаления из кэша {key}: {e}")
     return False
 
 
@@ -110,7 +110,7 @@ async def cache_delete_pattern(pattern: str) -> int:
         # Убираем debug логи в production
         from .config import settings
         if settings.environment != "production":
-        logger.debug(f"Ошибка удаления паттерна {pattern}: {e}")
+            logger.debug(f"Ошибка удаления паттерна {pattern}: {e}")
     return 0
 
 
