@@ -80,27 +80,29 @@ class Settings(BaseSettings):
 
   @validator("admin_ids", pre=True)
   def split_admin_ids(cls, value):
-    if not value:
+    if value is None:
       return []
     if isinstance(value, list):
       return [int(v) for v in value]
     # Обрабатываем строку - убираем пробелы и разбиваем по запятой
-    str_value = str(value).strip()
-    if not str_value:
-      return []
-    # Разбиваем по запятой и обрабатываем каждый элемент
-    ids = []
-    for v in str_value.split(","):
-      v = v.strip()
-      if v:
-        try:
-          ids.append(int(v))
-        except ValueError:
-          # Логируем, но не падаем - просто пропускаем некорректное значение
-          import logging
-          logger = logging.getLogger(__name__)
-          logger.warning(f"Некорректное значение в ADMIN_IDS: '{v}', пропускаем")
-    return ids
+    if isinstance(value, str):
+      str_value = value.strip()
+      if not str_value:
+        return []
+      # Разбиваем по запятой и обрабатываем каждый элемент
+      ids = []
+      for v in str_value.split(","):
+        v = v.strip()
+        if v:
+          try:
+            ids.append(int(v))
+          except ValueError:
+            # Логируем, но не падаем - просто пропускаем некорректное значение
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Некорректное значение в ADMIN_IDS: '{v}', пропускаем")
+      return ids
+    return []
 
   @validator("upload_dir", pre=True)
   def ensure_upload_dir(cls, value):
@@ -110,11 +112,16 @@ class Settings(BaseSettings):
 
   @validator("dev_allowed_user_ids", pre=True)
   def split_dev_ids(cls, value):
-    if not value:
+    if value is None:
       return []
+    if isinstance(value, str):
+      value = value.strip()
+      if not value:
+        return []
+      return [int(v.strip()) for v in value.split(",") if v.strip()]
     if isinstance(value, list):
       return [int(v) for v in value]
-    return [int(v.strip()) for v in str(value).split(",") if v.strip()]
+    return []
 
   class Config:
     env_file = ENV_PATH
