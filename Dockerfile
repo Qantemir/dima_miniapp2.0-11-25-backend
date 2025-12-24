@@ -26,10 +26,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements.txt и устанавливаем Python зависимости
-# ARG для сброса кэша при изменении requirements.txt
-ARG CACHE_BUST=1
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Показываем содержимое для отладки и принудительно сбрасываем кэш
+RUN echo "=== Requirements.txt content ===" && cat requirements.txt && echo "=== Installing dependencies ===" && pip install --no-cache-dir -r requirements.txt
 
 # Копируем бэкенд
 COPY app/ ./app/
