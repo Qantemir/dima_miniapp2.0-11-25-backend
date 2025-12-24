@@ -376,49 +376,58 @@ async def get_catalog(
   db: AsyncIOMotorDatabase = Depends(get_db),
   if_none_match: str | None = Header(None, alias="If-None-Match"),
 ):
-  # Проверяем Redis кэш сначала
-  cache_key = make_cache_key("catalog", only_available=True)
-  cached_data = await cache_get(cache_key)
-  
-  if cached_data:
-    # Оптимизированная обработка кэша без лишних проверок
-    try:
-      if HAS_ORJSON:
-        catalog_dict = orjson.loads(cached_data)
-      else:
-        data_str = cached_data.decode('utf-8') if isinstance(cached_data, bytes) else cached_data
-        catalog_dict = orjson.loads(data_str)
-      catalog = CatalogResponse(**catalog_dict)
-      # Получаем etag из отдельного ключа
-      cached_etag = await cache_get(f"{cache_key}:etag")
-      if cached_etag:
-        etag = cached_etag.decode('utf-8')
-        if if_none_match and if_none_match == etag:
-          return _build_not_modified_response(etag)
-        return _build_catalog_response(catalog, etag)
-    except:
-      # Пропускаем ошибки кэша без логирования для скорости
-      pass
-  
-  # Если нет в Redis, используем стандартный кэш
-  catalog, etag = await fetch_catalog(db)
-  
-  # Сохраняем в Redis для следующего раза (без блокировки ответа)
   try:
-    catalog_dict = _catalog_to_dict(catalog)
-    if HAS_ORJSON:
-      catalog_bytes = orjson.dumps(catalog_dict, option=orjson.OPT_SERIALIZE_NUMPY)
-    else:
-      catalog_bytes = orjson.dumps(catalog_dict).encode('utf-8')
-    # Сохраняем асинхронно без ожидания для максимальной скорости ответа
-    asyncio.create_task(cache_set(cache_key, catalog_bytes, ttl=settings.catalog_cache_ttl_seconds))
-    asyncio.create_task(cache_set(f"{cache_key}:etag", etag.encode('utf-8'), ttl=settings.catalog_cache_ttl_seconds))
-  except:
-    pass  # Игнорируем ошибки сохранения кэша для скорости
-  
-  if if_none_match and if_none_match == etag:
-    return _build_not_modified_response(etag)
-  return _build_catalog_response(catalog, etag)
+    # Проверяем Redis кэш сначала
+    cache_key = make_cache_key("catalog", only_available=True)
+    cached_data = await cache_get(cache_key)
+    
+    if cached_data:
+      # Оптимизированная обработка кэша без лишних проверок
+      try:
+        if HAS_ORJSON:
+          catalog_dict = orjson.loads(cached_data)
+        else:
+          data_str = cached_data.decode('utf-8') if isinstance(cached_data, bytes) else cached_data
+          catalog_dict = orjson.loads(data_str)
+        catalog = CatalogResponse(**catalog_dict)
+        # Получаем etag из отдельного ключа
+        cached_etag = await cache_get(f"{cache_key}:etag")
+        if cached_etag:
+          etag = cached_etag.decode('utf-8')
+          if if_none_match and if_none_match == etag:
+            return _build_not_modified_response(etag)
+          return _build_catalog_response(catalog, etag)
+      except:
+        # Пропускаем ошибки кэша без логирования для скорости
+        pass
+    
+    # Если нет в Redis, используем стандартный кэш
+    catalog, etag = await fetch_catalog(db)
+    
+    # Сохраняем в Redis для следующего раза (без блокировки ответа)
+    try:
+      catalog_dict = _catalog_to_dict(catalog)
+      if HAS_ORJSON:
+        catalog_bytes = orjson.dumps(catalog_dict, option=orjson.OPT_SERIALIZE_NUMPY)
+      else:
+        catalog_bytes = orjson.dumps(catalog_dict).encode('utf-8')
+      # Сохраняем асинхронно без ожидания для максимальной скорости ответа
+      asyncio.create_task(cache_set(cache_key, catalog_bytes, ttl=settings.catalog_cache_ttl_seconds))
+      asyncio.create_task(cache_set(f"{cache_key}:etag", etag.encode('utf-8'), ttl=settings.catalog_cache_ttl_seconds))
+    except:
+      pass  # Игнорируем ошибки сохранения кэша для скорости
+    
+    if if_none_match and if_none_match == etag:
+      return _build_not_modified_response(etag)
+    return _build_catalog_response(catalog, etag)
+  except HTTPException:
+    raise
+  except Exception as e:
+    logger.error(f"Ошибка при получении каталога: {e}", exc_info=True)
+    raise HTTPException(
+      status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+      detail=f"Ошибка при получении каталога: {str(e)}"
+    )
 
 
 @router.get("/admin/catalog", response_model=CatalogResponse)

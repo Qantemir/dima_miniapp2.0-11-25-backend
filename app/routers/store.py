@@ -101,6 +101,14 @@ async def get_or_create_store_status(db: AsyncIOMotorDatabase, use_cache: bool =
       status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
       detail="База данных недоступна. Убедитесь, что MongoDB запущена."
     )
+  except Exception as e:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.error(f"Неожиданная ошибка при получении статуса магазина: {e}", exc_info=True)
+    raise HTTPException(
+      status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+      detail=f"Ошибка при получении статуса магазина: {str(e)}"
+    )
 
 
 def _invalidate_cache():
@@ -112,8 +120,19 @@ def _invalidate_cache():
 
 @router.get("/store/status", response_model=StoreStatus)
 async def get_store_status(db: AsyncIOMotorDatabase = Depends(get_db)):
-    doc = await get_or_create_store_status(db)
-    return StoreStatus(**doc)
+    try:
+        doc = await get_or_create_store_status(db)
+        return StoreStatus(**doc)
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Ошибка при получении статуса магазина: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка при получении статуса магазина: {str(e)}"
+        )
 
 
 @router.patch("/admin/store/sleep", response_model=StoreStatus)
@@ -157,24 +176,35 @@ async def stream_store_status(
   request: Request,
   db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-  queue = store_status_broadcaster.register()
-  current_doc = await get_or_create_store_status(db)
-  await queue.put(_serialize_store_status(StoreStatus(**current_doc)))
+  try:
+    queue = store_status_broadcaster.register()
+    current_doc = await get_or_create_store_status(db)
+    await queue.put(_serialize_store_status(StoreStatus(**current_doc)))
 
-  async def event_generator():
-    try:
-      while True:
-        data = await queue.get()
-        yield f"event: status\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-    except asyncio.CancelledError:
-      pass
-    finally:
-      store_status_broadcaster.unregister(queue)
+    async def event_generator():
+      try:
+        while True:
+          data = await queue.get()
+          yield f"event: status\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+      except asyncio.CancelledError:
+        pass
+      finally:
+        store_status_broadcaster.unregister(queue)
 
-  response = StreamingResponse(event_generator(), media_type="text/event-stream")
-  # Явно отключаем gzip для SSE, чтобы избежать ошибок с закрытыми файлами
-  response.headers["Content-Encoding"] = "identity"
-  return response
+    response = StreamingResponse(event_generator(), media_type="text/event-stream")
+    # Явно отключаем gzip для SSE, чтобы избежать ошибок с закрытыми файлами
+    response.headers["Content-Encoding"] = "identity"
+    return response
+  except HTTPException:
+    raise
+  except Exception as e:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.error(f"Ошибка при создании стрима статуса магазина: {e}", exc_info=True)
+    raise HTTPException(
+      status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+      detail=f"Ошибка при создании стрима статуса магазина: {str(e)}"
+    )
 
 
 @router.patch("/admin/store/payment-link", response_model=StoreStatus)

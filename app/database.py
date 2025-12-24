@@ -67,10 +67,14 @@ async def close_mongo_connection():
 
 async def get_db() -> AsyncIOMotorDatabase:
   """Получает подключение к БД, подключаясь при необходимости."""
+  from fastapi import HTTPException, status
   if client is None or db is None:
     await ensure_db_connection()
   if db is None:
-    raise RuntimeError("Database is not initialized")
+    raise HTTPException(
+      status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+      detail="База данных недоступна. Убедитесь, что MongoDB запущена и правильно настроена."
+    )
   return db
 
 
