@@ -46,15 +46,27 @@ _cache_expires_at: Optional[datetime] = None
 _cache_ttl_seconds = 30  # Увеличено до 30 секунд для максимальной производительности
 
 
-async def get_or_create_store_status(db: AsyncIOMotorDatabase, use_cache: bool = True):
+async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cache: bool = True):
   """
   Получает или создает статус магазина с опциональным кешированием.
   
   Args:
-    db: Подключение к БД
+    db: Подключение к БД (может быть None если БД недоступна)
     use_cache: Использовать ли кеш (по умолчанию True)
   """
   global _cache, _cache_expires_at
+  
+  # Если БД недоступна, возвращаем fallback из кеша или дефолтные значения
+  if db is None:
+    if use_cache and _cache is not None:
+      return _cache.copy()
+    return {
+      "is_sleep_mode": False,
+      "sleep_message": None,
+      "sleep_until": None,
+      "payment_link": None,
+      "updated_at": datetime.utcnow(),
+    }
   
   # Проверяем кеш, если он включен
   if use_cache and _cache is not None and _cache_expires_at is not None:
@@ -97,18 +109,37 @@ async def get_or_create_store_status(db: AsyncIOMotorDatabase, use_cache: bool =
     
     return doc
   except (ServerSelectionTimeoutError, ConnectionFailure) as e:
-    raise HTTPException(
-      status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-      detail="База данных недоступна. Убедитесь, что MongoDB запущена."
-    )
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"База данных недоступна: {e}, возвращаем fallback")
+    # Возвращаем fallback вместо исключения
+    fallback = {
+      "is_sleep_mode": False,
+      "sleep_message": None,
+      "sleep_until": None,
+      "payment_link": None,
+      "updated_at": datetime.utcnow(),
+    }
+    if use_cache:
+      _cache = fallback.copy()
+      _cache_expires_at = datetime.utcnow() + timedelta(seconds=_cache_ttl_seconds)
+    return fallback
   except Exception as e:
     import logging
     logger = logging.getLogger(__name__)
     logger.error(f"Неожиданная ошибка при получении статуса магазина: {e}", exc_info=True)
-    raise HTTPException(
-      status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-      detail=f"Ошибка при получении статуса магазина: {str(e)}"
-    )
+    # Возвращаем fallback вместо исключения
+    fallback = {
+      "is_sleep_mode": False,
+      "sleep_message": None,
+      "sleep_until": None,
+      "payment_link": None,
+      "updated_at": datetime.utcnow(),
+    }
+    if use_cache:
+      _cache = fallback.copy()
+      _cache_expires_at = datetime.utcnow() + timedelta(seconds=_cache_ttl_seconds)
+    return fallback
 
 
 def _invalidate_cache():
@@ -188,9 +219,22 @@ def _normalize_store_status_doc(doc: dict) -> dict:
 
 
 @router.get("/store/status", response_model=StoreStatus)
-async def get_store_status(db: AsyncIOMotorDatabase = Depends(get_db)):
+async def get_store_status(db: Optional[AsyncIOMotorDatabase] = Depends(get_db)):
     import logging
+    from typing import Optional
     logger = logging.getLogger(__name__)
+    
+    # Если БД недоступна, сразу возвращаем fallback
+    if db is None:
+        logger.warning("БД недоступна, возвращаем fallback статус")
+        return StoreStatus(
+            is_sleep_mode=False,
+            sleep_message=None,
+            sleep_until=None,
+            payment_link=None,
+            updated_at=datetime.utcnow(),
+        )
+    
     try:
         logger.debug("Получение статуса магазина...")
         doc = await get_or_create_store_status(db)
@@ -200,19 +244,6 @@ async def get_store_status(db: AsyncIOMotorDatabase = Depends(get_db)):
         result = StoreStatus(**normalized_doc)
         logger.debug("StoreStatus модель создана успешно")
         return result
-    except HTTPException as e:
-        # Если это 503 (БД недоступна), возвращаем fallback вместо ошибки
-        if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
-            logger.warning(f"БД недоступна, возвращаем fallback статус: {e.detail}")
-            return StoreStatus(
-                is_sleep_mode=False,
-                sleep_message=None,
-                sleep_until=None,
-                payment_link=None,
-                updated_at=datetime.utcnow(),
-            )
-        logger.error(f"HTTPException при получении статуса магазина: {e.status_code} - {e.detail}")
-        raise
     except Exception as e:
         logger.error(f"Ошибка при получении статуса магазина: {type(e).__name__}: {e}", exc_info=True)
         # Возвращаем fallback вместо 500, чтобы фронтенд не падал
@@ -265,12 +296,25 @@ def _serialize_store_status(model: StoreStatus) -> dict:
 @router.get("/store/status/stream")
 async def stream_store_status(
   request: Request,
-  db: AsyncIOMotorDatabase = Depends(get_db),
+  db: Optional[AsyncIOMotorDatabase] = Depends(get_db),
 ):
   import logging
   logger = logging.getLogger(__name__)
-  try:
-    queue = store_status_broadcaster.register()
+  
+  queue = store_status_broadcaster.register()
+  
+  # Если БД недоступна, отправляем fallback
+  if db is None:
+    logger.warning("БД недоступна для стрима, отправляем fallback статус")
+    fallback_status = StoreStatus(
+      is_sleep_mode=False,
+      sleep_message=None,
+      sleep_until=None,
+      payment_link=None,
+      updated_at=datetime.utcnow(),
+    )
+    await queue.put(_serialize_store_status(fallback_status))
+  else:
     try:
       current_doc = await get_or_create_store_status(db)
       normalized_doc = _normalize_store_status_doc(current_doc)
@@ -302,59 +346,6 @@ async def stream_store_status(
     # Явно отключаем gzip для SSE, чтобы избежать ошибок с закрытыми файлами
     response.headers["Content-Encoding"] = "identity"
     return response
-  except HTTPException as e:
-    if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
-      # Для недоступной БД все равно возвращаем стрим с fallback
-      queue = store_status_broadcaster.register()
-      fallback_status = StoreStatus(
-        is_sleep_mode=False,
-        sleep_message=None,
-        sleep_until=None,
-        payment_link=None,
-        updated_at=datetime.utcnow(),
-      )
-      await queue.put(_serialize_store_status(fallback_status))
-      
-      async def event_generator():
-        try:
-          while True:
-            data = await queue.get()
-            yield f"event: status\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-        except asyncio.CancelledError:
-          pass
-        finally:
-          store_status_broadcaster.unregister(queue)
-      
-      response = StreamingResponse(event_generator(), media_type="text/event-stream")
-      response.headers["Content-Encoding"] = "identity"
-      return response
-    raise
-  except Exception as e:
-    logger.error(f"Ошибка при создании стрима статуса магазина: {e}", exc_info=True)
-    # Все равно возвращаем стрим с fallback
-    queue = store_status_broadcaster.register()
-    fallback_status = StoreStatus(
-      is_sleep_mode=False,
-      sleep_message=None,
-      sleep_until=None,
-      payment_link=None,
-      updated_at=datetime.utcnow(),
-    )
-    await queue.put(_serialize_store_status(fallback_status))
-    
-    async def event_generator():
-      try:
-        while True:
-          data = await queue.get()
-          yield f"event: status\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-      except asyncio.CancelledError:
-        pass
-      finally:
-        store_status_broadcaster.unregister(queue)
-    
-    response = StreamingResponse(event_generator(), media_type="text/event-stream")
-    response.headers["Content-Encoding"] = "identity"
-    return response
 
 
 @router.patch("/admin/store/payment-link", response_model=StoreStatus)
@@ -383,12 +374,12 @@ async def update_payment_link(
   return status_model
 
 
-async def _ensure_awake_if_needed(db: AsyncIOMotorDatabase, doc: dict):
+async def _ensure_awake_if_needed(db: Optional[AsyncIOMotorDatabase], doc: dict):
   """
   Проверяет, нужно ли автоматически вывести магазин из режима сна
   (если указано время sleep_until и оно уже прошло).
   """
-  if not doc:
+  if db is None or not doc:
     return doc
 
   try:

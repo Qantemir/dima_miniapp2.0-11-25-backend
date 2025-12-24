@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import asyncio
 import json
@@ -230,7 +230,7 @@ async def _bump_catalog_cache_version(db: AsyncIOMotorDatabase) -> str:
 
 
 async def fetch_catalog(
-  db: AsyncIOMotorDatabase,
+  db: Optional[AsyncIOMotorDatabase],
   *,
   force_refresh: bool = False,
   only_available: bool = True,
@@ -238,6 +238,15 @@ async def fetch_catalog(
   global _catalog_cache, _catalog_cache_etag, _catalog_cache_expiration, _catalog_cache_version
   ttl = settings.catalog_cache_ttl_seconds
   now = datetime.utcnow()
+  
+  # Если БД недоступна, возвращаем пустой каталог или кеш
+  if db is None:
+    if _catalog_cache is not None and _catalog_cache_etag is not None:
+      logger.warning("БД недоступна, возвращаем кешированный каталог")
+      return _catalog_cache, _catalog_cache_etag
+    logger.warning("БД недоступна, возвращаем пустой каталог")
+    empty_catalog = CatalogResponse(categories=[], products=[])
+    return empty_catalog, "empty-catalog"
   
   # Быстрая проверка кеша без запроса к БД
   # Если кеш валиден и версия в памяти совпадает, возвращаем сразу
@@ -258,7 +267,14 @@ async def fetch_catalog(
     return _catalog_cache, _catalog_cache_etag
 
   # Если кеш истек или версия не совпадает, получаем актуальную версию (с кешированием)
-  current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
+  try:
+    current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
+  except Exception as e:
+    logger.warning(f"Ошибка при получении версии каталога: {e}, возвращаем кеш или пустой каталог")
+    if _catalog_cache is not None and _catalog_cache_etag is not None:
+      return _catalog_cache, _catalog_cache_etag
+    empty_catalog = CatalogResponse(categories=[], products=[])
+    return empty_catalog, "error-catalog"
 
   # Проверяем кеш еще раз после получения версии
   if (
@@ -273,37 +289,57 @@ async def fetch_catalog(
     return _catalog_cache, _catalog_cache_etag
 
   # Кеш истек или версия изменилась - загружаем заново
-  async with _catalog_cache_lock:
-    # Двойная проверка после получения lock (возможно, другой поток уже обновил кеш)
-    current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
-    now = datetime.utcnow()
-    if (
-      not force_refresh
-      and ttl > 0
-      and _catalog_cache
-      and _catalog_cache_etag
-      and _catalog_cache_expiration
-      and _catalog_cache_expiration > now
-      and _catalog_cache_version == current_version
-    ):
+  try:
+    async with _catalog_cache_lock:
+      # Двойная проверка после получения lock (возможно, другой поток уже обновил кеш)
+      try:
+        current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
+      except Exception as version_error:
+        logger.warning(f"Ошибка при получении версии каталога: {version_error}, используем текущую версию")
+        current_version = _catalog_cache_version or "unknown"
+      
+      now = datetime.utcnow()
+      if (
+        not force_refresh
+        and ttl > 0
+        and _catalog_cache
+        and _catalog_cache_etag
+        and _catalog_cache_expiration
+        and _catalog_cache_expiration > now
+        and _catalog_cache_version == current_version
+      ):
+        return _catalog_cache, _catalog_cache_etag
+
+      # Загружаем данные из БД
+      try:
+        data = await _load_catalog_from_db(db, only_available=only_available)
+        etag = _compute_catalog_etag(data)
+      except Exception as load_error:
+        logger.warning(f"Ошибка при загрузке каталога из БД: {load_error}, возвращаем кеш или пустой каталог")
+        if _catalog_cache is not None and _catalog_cache_etag is not None:
+          return _catalog_cache, _catalog_cache_etag
+        empty_catalog = CatalogResponse(categories=[], products=[])
+        return empty_catalog, "error-catalog"
+
+      if ttl > 0:
+        _catalog_cache = data
+        _catalog_cache_etag = etag
+        _catalog_cache_expiration = now + timedelta(seconds=ttl)
+        _catalog_cache_version = current_version
+      else:
+        _catalog_cache = None
+        _catalog_cache_etag = None
+        _catalog_cache_expiration = None
+        _catalog_cache_version = None
+
+      return data, etag
+  except Exception as e:
+    logger.error(f"Критическая ошибка в fetch_catalog: {e}", exc_info=True)
+    # Возвращаем кеш или пустой каталог
+    if _catalog_cache is not None and _catalog_cache_etag is not None:
       return _catalog_cache, _catalog_cache_etag
-
-    # Загружаем данные из БД
-    data = await _load_catalog_from_db(db, only_available=only_available)
-    etag = _compute_catalog_etag(data)
-
-    if ttl > 0:
-      _catalog_cache = data
-      _catalog_cache_etag = etag
-      _catalog_cache_expiration = now + timedelta(seconds=ttl)
-      _catalog_cache_version = current_version
-    else:
-      _catalog_cache = None
-      _catalog_cache_etag = None
-      _catalog_cache_expiration = None
-      _catalog_cache_version = None
-
-    return data, etag
+    empty_catalog = CatalogResponse(categories=[], products=[])
+    return empty_catalog, "error-catalog"
 
 
 async def invalidate_catalog_cache(db: AsyncIOMotorDatabase | None = None):
@@ -373,7 +409,7 @@ def _build_cache_control_value() -> str:
 
 @router.get("/catalog", response_model=CatalogResponse)
 async def get_catalog(
-  db: AsyncIOMotorDatabase = Depends(get_db),
+  db: Optional[AsyncIOMotorDatabase] = Depends(get_db),
   if_none_match: str | None = Header(None, alias="If-None-Match"),
 ):
   try:

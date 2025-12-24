@@ -1,4 +1,6 @@
 import logging
+import asyncio
+from typing import Optional
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo import ASCENDING, DESCENDING
 
@@ -65,9 +67,8 @@ async def close_mongo_connection():
     client = None
 
 
-async def get_db() -> AsyncIOMotorDatabase:
-  """Получает подключение к БД, подключаясь при необходимости."""
-  from fastapi import HTTPException, status
+async def get_db() -> Optional[AsyncIOMotorDatabase]:
+  """Получает подключение к БД, подключаясь при необходимости. Возвращает None если БД недоступна."""
   import logging
   logger = logging.getLogger(__name__)
   
@@ -77,33 +78,26 @@ async def get_db() -> AsyncIOMotorDatabase:
       await ensure_db_connection()
     
     if db is None:
-      logger.error("База данных не инициализирована после попытки подключения")
-      raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="База данных недоступна. Убедитесь, что MongoDB запущена и правильно настроена."
-      )
+      logger.warning("База данных не инициализирована после попытки подключения")
+      return None
     
-    # Проверяем, что подключение действительно работает
+    # Проверяем, что подключение действительно работает (без блокировки, быстро)
     try:
-      await client.admin.command('ping')
-    except Exception as ping_error:
+      await asyncio.wait_for(client.admin.command('ping'), timeout=2.0)
+    except (asyncio.TimeoutError, Exception) as ping_error:
       logger.warning(f"Ping к MongoDB не прошел: {ping_error}, пытаемся переподключиться...")
-      await connect_to_mongo()
+      try:
+        await connect_to_mongo()
+      except Exception:
+        pass
       if db is None:
-        raise HTTPException(
-          status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-          detail="База данных недоступна после переподключения."
-        )
+        logger.warning("База данных недоступна после переподключения")
+        return None
     
     return db
-  except HTTPException:
-    raise
   except Exception as e:
     logger.error(f"Ошибка при получении подключения к БД: {e}", exc_info=True)
-    raise HTTPException(
-      status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-      detail=f"Ошибка подключения к базе данных: {str(e)}"
-    )
+    return None
 
 
 async def ensure_indexes(database: AsyncIOMotorDatabase):
