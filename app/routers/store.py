@@ -118,11 +118,56 @@ def _invalidate_cache():
   _cache_expires_at = None
 
 
+def _normalize_store_status_doc(doc: dict) -> dict:
+  """
+  Нормализует документ из БД для создания StoreStatus модели.
+  Преобразует типы полей и удаляет лишние поля.
+  """
+  normalized = {
+    "is_sleep_mode": doc.get("is_sleep_mode", False),
+    "sleep_message": doc.get("sleep_message"),
+    "payment_link": doc.get("payment_link"),
+  }
+  
+  # Преобразуем sleep_until
+  sleep_until = doc.get("sleep_until")
+  if sleep_until is not None:
+    if isinstance(sleep_until, str):
+      try:
+        normalized["sleep_until"] = datetime.fromisoformat(sleep_until.replace('Z', '+00:00'))
+      except (ValueError, AttributeError):
+        normalized["sleep_until"] = None
+    elif isinstance(sleep_until, datetime):
+      normalized["sleep_until"] = sleep_until
+    else:
+      normalized["sleep_until"] = None
+  else:
+    normalized["sleep_until"] = None
+  
+  # Преобразуем updated_at
+  updated_at = doc.get("updated_at")
+  if updated_at is not None:
+    if isinstance(updated_at, str):
+      try:
+        normalized["updated_at"] = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+      except (ValueError, AttributeError):
+        normalized["updated_at"] = datetime.utcnow()
+    elif isinstance(updated_at, datetime):
+      normalized["updated_at"] = updated_at
+    else:
+      normalized["updated_at"] = datetime.utcnow()
+  else:
+    normalized["updated_at"] = datetime.utcnow()
+  
+  return normalized
+
+
 @router.get("/store/status", response_model=StoreStatus)
 async def get_store_status(db: AsyncIOMotorDatabase = Depends(get_db)):
     try:
         doc = await get_or_create_store_status(db)
-        return StoreStatus(**doc)
+        normalized_doc = _normalize_store_status_doc(doc)
+        return StoreStatus(**normalized_doc)
     except HTTPException:
         raise
     except Exception as e:
@@ -155,7 +200,8 @@ async def toggle_store_sleep(
   )
   updated = await db.store_status.find_one({"_id": doc["_id"]})
   updated = await _ensure_awake_if_needed(db, updated)
-  status_model = StoreStatus(**updated)
+  normalized_doc = _normalize_store_status_doc(updated)
+  status_model = StoreStatus(**normalized_doc)
   _invalidate_cache()  # Инвалидируем кеш после изменения
   await store_status_broadcaster.broadcast(_serialize_store_status(status_model))
   return status_model
@@ -179,7 +225,8 @@ async def stream_store_status(
   try:
     queue = store_status_broadcaster.register()
     current_doc = await get_or_create_store_status(db)
-    await queue.put(_serialize_store_status(StoreStatus(**current_doc)))
+    normalized_doc = _normalize_store_status_doc(current_doc)
+    await queue.put(_serialize_store_status(StoreStatus(**normalized_doc)))
 
     async def event_generator():
       try:
@@ -226,7 +273,8 @@ async def update_payment_link(
   )
   updated = await db.store_status.find_one({"_id": doc["_id"]})
   updated = await _ensure_awake_if_needed(db, updated)
-  status_model = StoreStatus(**updated)
+  normalized_doc = _normalize_store_status_doc(updated)
+  status_model = StoreStatus(**normalized_doc)
   _invalidate_cache()  # Инвалидируем кеш после изменения
   await store_status_broadcaster.broadcast(_serialize_store_status(status_model))
   return status_model
@@ -269,8 +317,9 @@ async def _ensure_awake_if_needed(db: AsyncIOMotorDatabase, doc: dict):
         doc["updated_at"] = datetime.utcnow()
         _invalidate_cache()  # Инвалидируем кеш после изменения
         # Рассылаем обновление клиентам
+        normalized_doc = _normalize_store_status_doc(doc)
         await store_status_broadcaster.broadcast(
-          _serialize_store_status(StoreStatus(**doc))
+          _serialize_store_status(StoreStatus(**normalized_doc))
         )
   except Exception:
     pass
