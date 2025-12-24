@@ -68,14 +68,42 @@ async def close_mongo_connection():
 async def get_db() -> AsyncIOMotorDatabase:
   """Получает подключение к БД, подключаясь при необходимости."""
   from fastapi import HTTPException, status
-  if client is None or db is None:
-    await ensure_db_connection()
-  if db is None:
+  import logging
+  logger = logging.getLogger(__name__)
+  
+  try:
+    if client is None or db is None:
+      logger.info("Подключение к базе данных...")
+      await ensure_db_connection()
+    
+    if db is None:
+      logger.error("База данных не инициализирована после попытки подключения")
+      raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="База данных недоступна. Убедитесь, что MongoDB запущена и правильно настроена."
+      )
+    
+    # Проверяем, что подключение действительно работает
+    try:
+      await client.admin.command('ping')
+    except Exception as ping_error:
+      logger.warning(f"Ping к MongoDB не прошел: {ping_error}, пытаемся переподключиться...")
+      await connect_to_mongo()
+      if db is None:
+        raise HTTPException(
+          status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+          detail="База данных недоступна после переподключения."
+        )
+    
+    return db
+  except HTTPException:
+    raise
+  except Exception as e:
+    logger.error(f"Ошибка при получении подключения к БД: {e}", exc_info=True)
     raise HTTPException(
       status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-      detail="База данных недоступна. Убедитесь, что MongoDB запущена и правильно настроена."
+      detail=f"Ошибка подключения к базе данных: {str(e)}"
     )
-  return db
 
 
 async def ensure_indexes(database: AsyncIOMotorDatabase):

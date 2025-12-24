@@ -420,10 +420,11 @@ async def get_catalog(
     if if_none_match and if_none_match == etag:
       return _build_not_modified_response(etag)
     return _build_catalog_response(catalog, etag)
-  except HTTPException:
+  except HTTPException as e:
+    logger.error(f"HTTPException при получении каталога: {e.status_code} - {e.detail}")
     raise
   except Exception as e:
-    logger.error(f"Ошибка при получении каталога: {e}", exc_info=True)
+    logger.error(f"Ошибка при получении каталога: {type(e).__name__}: {e}", exc_info=True)
     raise HTTPException(
       status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
       detail=f"Ошибка при получении каталога: {str(e)}"

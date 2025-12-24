@@ -123,57 +123,88 @@ def _normalize_store_status_doc(doc: dict) -> dict:
   Нормализует документ из БД для создания StoreStatus модели.
   Преобразует типы полей и удаляет лишние поля.
   """
-  normalized = {
-    "is_sleep_mode": doc.get("is_sleep_mode", False),
-    "sleep_message": doc.get("sleep_message"),
-    "payment_link": doc.get("payment_link"),
-  }
+  import logging
+  logger = logging.getLogger(__name__)
   
-  # Преобразуем sleep_until
-  sleep_until = doc.get("sleep_until")
-  if sleep_until is not None:
-    if isinstance(sleep_until, str):
-      try:
-        normalized["sleep_until"] = datetime.fromisoformat(sleep_until.replace('Z', '+00:00'))
-      except (ValueError, AttributeError):
+  try:
+    normalized = {
+      "is_sleep_mode": bool(doc.get("is_sleep_mode", False)),
+      "sleep_message": doc.get("sleep_message") if doc.get("sleep_message") else None,
+      "payment_link": doc.get("payment_link") if doc.get("payment_link") else None,
+    }
+    
+    # Преобразуем sleep_until
+    sleep_until = doc.get("sleep_until")
+    if sleep_until is not None:
+      if isinstance(sleep_until, str):
+        try:
+          # Пробуем разные форматы
+          if 'Z' in sleep_until:
+            normalized["sleep_until"] = datetime.fromisoformat(sleep_until.replace('Z', '+00:00'))
+          else:
+            normalized["sleep_until"] = datetime.fromisoformat(sleep_until)
+        except (ValueError, AttributeError) as e:
+          logger.warning(f"Не удалось преобразовать sleep_until из строки: {sleep_until}, ошибка: {e}")
+          normalized["sleep_until"] = None
+      elif isinstance(sleep_until, datetime):
+        normalized["sleep_until"] = sleep_until
+      else:
+        logger.warning(f"Неожиданный тип sleep_until: {type(sleep_until)}")
         normalized["sleep_until"] = None
-    elif isinstance(sleep_until, datetime):
-      normalized["sleep_until"] = sleep_until
     else:
       normalized["sleep_until"] = None
-  else:
-    normalized["sleep_until"] = None
-  
-  # Преобразуем updated_at
-  updated_at = doc.get("updated_at")
-  if updated_at is not None:
-    if isinstance(updated_at, str):
-      try:
-        normalized["updated_at"] = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
-      except (ValueError, AttributeError):
+    
+    # Преобразуем updated_at
+    updated_at = doc.get("updated_at")
+    if updated_at is not None:
+      if isinstance(updated_at, str):
+        try:
+          if 'Z' in updated_at:
+            normalized["updated_at"] = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+          else:
+            normalized["updated_at"] = datetime.fromisoformat(updated_at)
+        except (ValueError, AttributeError) as e:
+          logger.warning(f"Не удалось преобразовать updated_at из строки: {updated_at}, ошибка: {e}, используем текущее время")
+          normalized["updated_at"] = datetime.utcnow()
+      elif isinstance(updated_at, datetime):
+        normalized["updated_at"] = updated_at
+      else:
+        logger.warning(f"Неожиданный тип updated_at: {type(updated_at)}, используем текущее время")
         normalized["updated_at"] = datetime.utcnow()
-    elif isinstance(updated_at, datetime):
-      normalized["updated_at"] = updated_at
     else:
       normalized["updated_at"] = datetime.utcnow()
-  else:
-    normalized["updated_at"] = datetime.utcnow()
-  
-  return normalized
+    
+    return normalized
+  except Exception as e:
+    logger.error(f"Ошибка при нормализации документа: {e}, doc: {doc}", exc_info=True)
+    # Возвращаем безопасные значения по умолчанию
+    return {
+      "is_sleep_mode": False,
+      "sleep_message": None,
+      "sleep_until": None,
+      "payment_link": None,
+      "updated_at": datetime.utcnow(),
+    }
 
 
 @router.get("/store/status", response_model=StoreStatus)
 async def get_store_status(db: AsyncIOMotorDatabase = Depends(get_db)):
+    import logging
+    logger = logging.getLogger(__name__)
     try:
+        logger.debug("Получение статуса магазина...")
         doc = await get_or_create_store_status(db)
+        logger.debug(f"Документ получен: {doc}")
         normalized_doc = _normalize_store_status_doc(doc)
-        return StoreStatus(**normalized_doc)
-    except HTTPException:
+        logger.debug(f"Документ нормализован: {normalized_doc}")
+        result = StoreStatus(**normalized_doc)
+        logger.debug("StoreStatus модель создана успешно")
+        return result
+    except HTTPException as e:
+        logger.error(f"HTTPException при получении статуса магазина: {e.status_code} - {e.detail}")
         raise
     except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Ошибка при получении статуса магазина: {e}", exc_info=True)
+        logger.error(f"Ошибка при получении статуса магазина: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка при получении статуса магазина: {str(e)}"
