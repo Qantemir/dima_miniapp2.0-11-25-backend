@@ -39,7 +39,7 @@ class Category(CategoryBase):
     id: PyObjectId = Field(default_factory=PyObjectId, alias="id")
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
         extra = "allow"  # Разрешаем дополнительные поля из базы данных
 
 
@@ -73,7 +73,7 @@ class Product(ProductBase):
     variants: Optional[List[dict]] = None
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
         extra = "allow"  # Разрешаем дополнительные поля из базы данных
 
 
@@ -100,7 +100,7 @@ class Cart(BaseModel):
     total_amount: float = 0.0
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
 
 
 class AddToCartRequest(BaseModel):
@@ -158,7 +158,7 @@ class Order(BaseModel):
     payment_type: Optional[str] = None
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
         extra = "allow"  # Разрешаем дополнительные поля из базы данных
 
 
@@ -229,5 +229,5 @@ class Customer(BaseModel):
     last_cart_activity: datetime = Field(default_factory=datetime.utcnow)
 
     class Config:
-        allow_population_by_field_name = True
+        populate_by_name = True
 

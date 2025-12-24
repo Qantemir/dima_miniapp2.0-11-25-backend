@@ -23,12 +23,12 @@ from ..auth import verify_admin
 from ..config import settings
 from ..database import get_db
 from ..cache import cache_get, cache_set, cache_delete_pattern, make_cache_key
-# Используем orjson если доступен, иначе fallback на ujson
+# Используем orjson если доступен, иначе fallback на стандартный json
 try:
     import orjson
     HAS_ORJSON = True
 except ImportError:
-    import ujson as orjson
+    import json as orjson
     HAS_ORJSON = False
 from ..schemas import (
   CatalogResponse,
@@ -333,9 +333,9 @@ async def _refresh_catalog_cache(db: AsyncIOMotorDatabase):
 
 
 def _build_catalog_response(catalog: CatalogResponse, etag: str) -> Response:
-  """Создает ответ с использованием orjson/ujson для быстрой сериализации"""
+  """Создает ответ с использованием orjson/json для быстрой сериализации"""
   catalog_dict = _catalog_to_dict(catalog)
-  # Используем orjson если доступен, иначе ujson
+  # Используем orjson если доступен, иначе стандартный json
   if HAS_ORJSON:
     content = orjson.dumps(catalog_dict, option=orjson.OPT_SERIALIZE_NUMPY)
   else:
@@ -383,9 +383,11 @@ async def get_catalog(
   if cached_data:
     # Оптимизированная обработка кэша без лишних проверок
     try:
-      catalog_dict = orjson.loads(cached_data) if HAS_ORJSON else orjson.loads(
-        cached_data.decode('utf-8') if isinstance(cached_data, bytes) else cached_data
-      )
+      if HAS_ORJSON:
+        catalog_dict = orjson.loads(cached_data)
+      else:
+        data_str = cached_data.decode('utf-8') if isinstance(cached_data, bytes) else cached_data
+        catalog_dict = orjson.loads(data_str)
       catalog = CatalogResponse(**catalog_dict)
       # Получаем etag из отдельного ключа
       cached_etag = await cache_get(f"{cache_key}:etag")
@@ -404,7 +406,10 @@ async def get_catalog(
   # Сохраняем в Redis для следующего раза (без блокировки ответа)
   try:
     catalog_dict = _catalog_to_dict(catalog)
-    catalog_bytes = orjson.dumps(catalog_dict, option=orjson.OPT_SERIALIZE_NUMPY) if HAS_ORJSON else orjson.dumps(catalog_dict).encode('utf-8')
+    if HAS_ORJSON:
+      catalog_bytes = orjson.dumps(catalog_dict, option=orjson.OPT_SERIALIZE_NUMPY)
+    else:
+      catalog_bytes = orjson.dumps(catalog_dict).encode('utf-8')
     # Сохраняем асинхронно без ожидания для максимальной скорости ответа
     asyncio.create_task(cache_set(cache_key, catalog_bytes, ttl=settings.catalog_cache_ttl_seconds))
     asyncio.create_task(cache_set(f"{cache_key}:etag", etag.encode('utf-8'), ttl=settings.catalog_cache_ttl_seconds))
