@@ -37,7 +37,7 @@ from ..schemas import (
     ProductCreate,
     ProductUpdate,
 )
-from ..utils import as_object_id, compress_base64_image_async, serialize_doc
+from ..utils import as_object_id, serialize_doc
 
 router = APIRouter(tags=["catalog"])
 logger = logging.getLogger(__name__)
@@ -703,29 +703,7 @@ async def create_product(
     if not category:
         raise HTTPException(status_code=400, detail="Категория не найдена")
     data = payload.dict()
-    
-    # Сжимаем изображения перед сохранением (асинхронно и параллельно)
-    compression_tasks = []
-    if data.get("image"):
-        compression_tasks.append(("image", compress_base64_image_async(data["image"])))
-    if data.get("images"):
-        for i, img in enumerate(data["images"]):
-            if img:
-                compression_tasks.append((f"images_{i}", compress_base64_image_async(img)))
-    
-    # Выполняем сжатие параллельно
-    if compression_tasks:
-        results = await asyncio.gather(*[task[1] for task in compression_tasks], return_exceptions=True)
-        for (key, _), result in zip(compression_tasks, results):
-            if isinstance(result, Exception):
-                logger.error(f"Ошибка при сжатии изображения {key}: {result}")
-                continue
-            if key == "image":
-                data["image"] = result
-            elif key.startswith("images_"):
-                idx = int(key.split("_")[1])
-                data["images"][idx] = result
-    
+    # Изображения уже сжаты на фронтенде, сохраняем как есть
     result = await db.products.insert_one(data)
     # Используем проекцию для минимизации загружаемых данных
     doc = await db.products.find_one(
@@ -773,28 +751,7 @@ async def update_product(
         if not category:
             raise HTTPException(status_code=400, detail="Категория не найдена")
     
-    # Сжимаем изображения перед обновлением, если они переданы (асинхронно и параллельно)
-    compression_tasks = []
-    if "image" in update_payload and update_payload["image"]:
-        compression_tasks.append(("image", compress_base64_image_async(update_payload["image"])))
-    if "images" in update_payload and update_payload["images"]:
-        for i, img in enumerate(update_payload["images"]):
-            if img:
-                compression_tasks.append((f"images_{i}", compress_base64_image_async(img)))
-    
-    # Выполняем сжатие параллельно
-    if compression_tasks:
-        results = await asyncio.gather(*[task[1] for task in compression_tasks], return_exceptions=True)
-        for (key, _), result in zip(compression_tasks, results):
-            if isinstance(result, Exception):
-                logger.error(f"Ошибка при сжатии изображения {key}: {result}")
-                continue
-            if key == "image":
-                update_payload["image"] = result
-            elif key.startswith("images_"):
-                idx = int(key.split("_")[1])
-                update_payload["images"][idx] = result
-    
+    # Изображения уже сжаты на фронтенде, обновляем как есть
     # Обновляем с проекцией для минимизации данных
     doc = await db.products.find_one_and_update(
         {"_id": product_oid},
