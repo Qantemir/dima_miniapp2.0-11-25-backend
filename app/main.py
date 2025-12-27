@@ -44,7 +44,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
                 content={
                     "is_sleep_mode": False,
                     "sleep_message": None,
-                    "updated_at": datetime.utcnow().isoformat(),
                 },
             )
 
@@ -64,7 +63,6 @@ async def http_exception_handler(request: Request, exc: HTTPException):
                 fallback_data = {
                     "is_sleep_mode": False,
                     "sleep_message": None,
-                    "updated_at": datetime.utcnow().isoformat(),
                 }
                 yield f"event: status\ndata: {json.dumps(fallback_data, ensure_ascii=False)}\n\n"
                 # Отправляем одно сообщение и закрываем стрим
@@ -95,9 +93,6 @@ async def global_exception_handler(request: Request, exc: Exception):
             content={
                 "is_sleep_mode": False,
                 "sleep_message": None,
-                "sleep_until": None,
-                "payment_link": None,
-                "updated_at": datetime.utcnow().isoformat(),
             },
         )
 
@@ -115,9 +110,6 @@ async def global_exception_handler(request: Request, exc: Exception):
             fallback_data = {
                 "is_sleep_mode": False,
                 "sleep_message": None,
-                "sleep_until": None,
-                "payment_link": None,
-                "updated_at": datetime.utcnow().isoformat(),
             }
             yield f"event: status\ndata: {json.dumps(fallback_data, ensure_ascii=False)}\n\n"
             await asyncio.sleep(0.1)

@@ -484,3 +484,128 @@ async def compress_base64_image_async(
         logger.error(f"Ошибка при асинхронном сжатии base64 изображения: {e}")
         # В случае ошибки возвращаем оригинальную строку
         return base64_string
+
+
+async def save_base64_image_to_gridfs(
+    base64_string: str,
+    max_width: int = 1920,
+    max_height: int = 1920,
+    quality: int = 85,
+) -> Optional[str]:
+    """
+    Сохраняет base64 изображение в GridFS и возвращает file_id.
+    
+    Args:
+        base64_string: Base64 строка изображения (может содержать data URL префикс)
+        max_width: Максимальная ширина (по умолчанию 1920px)
+        max_height: Максимальная высота (по умолчанию 1920px)
+        quality: Качество JPEG (1-100, по умолчанию 85)
+        
+    Returns:
+        file_id как строка или None в случае ошибки
+    """
+    if not base64_string:
+        return None
+    
+    import asyncio
+    from datetime import datetime
+    from uuid import uuid4
+    
+    try:
+        loop = asyncio.get_event_loop()
+        fs = get_gridfs()
+        
+        # Определяем формат и декодируем base64
+        if "," in base64_string:
+            header, data = base64_string.split(",", 1)
+            # Определяем формат из заголовка
+            if "jpeg" in header.lower() or "jpg" in header.lower():
+                format = "JPEG"
+                mime_type = "image/jpeg"
+                extension = ".jpg"
+            elif "png" in header.lower():
+                format = "PNG"
+                mime_type = "image/png"
+                extension = ".png"
+            elif "webp" in header.lower():
+                format = "WEBP"
+                mime_type = "image/webp"
+                extension = ".webp"
+            else:
+                format = "JPEG"
+                mime_type = "image/jpeg"
+                extension = ".jpg"
+        else:
+            data = base64_string
+            format = "JPEG"
+            mime_type = "image/jpeg"
+            extension = ".jpg"
+        
+        # Декодируем base64
+        image_bytes = base64.b64decode(data)
+        
+        # Сжимаем изображение если нужно
+        compressed_bytes = await loop.run_in_executor(
+            None,
+            compress_image_bytes,
+            image_bytes,
+            max_width,
+            max_height,
+            quality,
+            format
+        )
+        
+        # Генерируем уникальное имя файла
+        filename = f"{uuid4().hex}{extension}"
+        
+        # Сохраняем в GridFS (синхронная операция в executor)
+        file_id = await loop.run_in_executor(
+            None,
+            lambda: fs.put(
+                compressed_bytes,
+                filename=filename,
+                content_type=mime_type,
+                metadata={
+                    "uploaded_at": datetime.utcnow(),
+                    "source": "product_image",
+                },
+            ),
+        )
+        
+        return str(file_id)
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении base64 изображения в GridFS: {e}")
+        return None
+
+
+async def save_base64_images_to_gridfs(
+    base64_strings: List[str],
+    max_width: int = 1920,
+    max_height: int = 1920,
+    quality: int = 85,
+) -> List[str]:
+    """
+    Сохраняет список base64 изображений в GridFS и возвращает список file_id.
+    
+    Args:
+        base64_strings: Список base64 строк изображений
+        max_width: Максимальная ширина (по умолчанию 1920px)
+        max_height: Максимальная высота (по умолчанию 1920px)
+        quality: Качество JPEG (1-100, по умолчанию 85)
+        
+    Returns:
+        Список file_id (строки), None значения пропускаются
+    """
+    if not base64_strings:
+        return []
+    
+    results = []
+    for base64_str in base64_strings:
+        if base64_str:
+            file_id = await save_base64_image_to_gridfs(
+                base64_str, max_width, max_height, quality
+            )
+            if file_id:
+                results.append(file_id)
+    
+    return results

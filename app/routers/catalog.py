@@ -37,15 +37,28 @@ from ..schemas import (
     ProductCreate,
     ProductUpdate,
 )
-from ..utils import as_object_id, serialize_doc
+from ..utils import (
+    as_object_id,
+    get_gridfs,
+    save_base64_image_to_gridfs,
+    save_base64_images_to_gridfs,
+    serialize_doc,
+)
 
 router = APIRouter(tags=["catalog"])
 logger = logging.getLogger(__name__)
 
-_catalog_cache: CatalogResponse | None = None
-_catalog_cache_etag: str | None = None
-_catalog_cache_expiration: datetime | None = None
-_catalog_cache_version: str | None = None
+# Раздельные кеши для публичного каталога (only_available=True) и админки (only_available=False)
+_catalog_cache_available: CatalogResponse | None = None
+_catalog_cache_available_etag: str | None = None
+_catalog_cache_available_expiration: datetime | None = None
+_catalog_cache_available_version: str | None = None
+
+_catalog_cache_all: CatalogResponse | None = None
+_catalog_cache_all_etag: str | None = None
+_catalog_cache_all_expiration: datetime | None = None
+_catalog_cache_all_version: str | None = None
+
 _catalog_cache_lock = asyncio.Lock()
 _CATALOG_CACHE_STATE_ID = "catalog_cache_state"
 # Кеш версии в памяти для избежания лишних запросов к БД
@@ -232,14 +245,35 @@ async def fetch_catalog(
     only_available: bool = True,
 ) -> Tuple[CatalogResponse, str]:
     """Загружает каталог из БД или кэша."""
-    global _catalog_cache, _catalog_cache_etag, _catalog_cache_expiration, _catalog_cache_version
+    global (
+        _catalog_cache_available,
+        _catalog_cache_available_etag,
+        _catalog_cache_available_expiration,
+        _catalog_cache_available_version,
+        _catalog_cache_all,
+        _catalog_cache_all_etag,
+        _catalog_cache_all_expiration,
+        _catalog_cache_all_version,
+    )
     ttl = settings.catalog_cache_ttl_seconds
     now = datetime.utcnow()
 
+    # Выбираем правильный кеш в зависимости от only_available
+    if only_available:
+        cache = _catalog_cache_available
+        cache_etag = _catalog_cache_available_etag
+        cache_expiration = _catalog_cache_available_expiration
+        cache_version = _catalog_cache_available_version
+    else:
+        cache = _catalog_cache_all
+        cache_etag = _catalog_cache_all_etag
+        cache_expiration = _catalog_cache_all_expiration
+        cache_version = _catalog_cache_all_version
+
     # Если БД недоступна, возвращаем пустой каталог или кеш
     if db is None:
-        if _catalog_cache is not None and _catalog_cache_etag is not None:
-            return _catalog_cache, _catalog_cache_etag
+        if cache is not None and cache_etag is not None:
+            return cache, cache_etag
         empty_catalog = CatalogResponse(categories=[], products=[])
         return empty_catalog, "empty-catalog"
 
@@ -248,25 +282,25 @@ async def fetch_catalog(
     if (
         not force_refresh
         and ttl > 0
-        and _catalog_cache
-        and _catalog_cache_etag
-        and _catalog_cache_expiration
-        and _catalog_cache_expiration > now
-        and _catalog_cache_version is not None
+        and cache
+        and cache_etag
+        and cache_expiration
+        and cache_expiration > now
+        and cache_version is not None
         and _cache_version_in_memory is not None
         and _cache_version_expiration is not None
         and now < _cache_version_expiration
-        and _catalog_cache_version == _cache_version_in_memory
+        and cache_version == _cache_version_in_memory
     ):
         # Кеш валиден и версия совпадает - возвращаем без запроса к БД
-        return _catalog_cache, _catalog_cache_etag
+        return cache, cache_etag
 
     # Если кеш истек или версия не совпадает, получаем актуальную версию (с кешированием)
     try:
         current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
     except Exception:
-        if _catalog_cache is not None and _catalog_cache_etag is not None:
-            return _catalog_cache, _catalog_cache_etag
+        if cache is not None and cache_etag is not None:
+            return cache, cache_etag
         empty_catalog = CatalogResponse(categories=[], products=[])
         return empty_catalog, "error-catalog"
 
@@ -274,13 +308,13 @@ async def fetch_catalog(
     if (
         not force_refresh
         and ttl > 0
-        and _catalog_cache
-        and _catalog_cache_etag
-        and _catalog_cache_expiration
-        and _catalog_cache_expiration > now
-        and _catalog_cache_version == current_version
+        and cache
+        and cache_etag
+        and cache_expiration
+        and cache_expiration > now
+        and cache_version == current_version
     ):
-        return _catalog_cache, _catalog_cache_etag
+        return cache, cache_etag
 
     # Кеш истек или версия изменилась - загружаем заново
     try:
@@ -289,58 +323,97 @@ async def fetch_catalog(
             try:
                 current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
             except Exception:
-                current_version = _catalog_cache_version or "unknown"
+                current_version = cache_version or "unknown"
 
             now = datetime.utcnow()
+            # Проверяем кеш еще раз после получения lock
+            if only_available:
+                cache = _catalog_cache_available
+                cache_etag = _catalog_cache_available_etag
+                cache_expiration = _catalog_cache_available_expiration
+                cache_version = _catalog_cache_available_version
+            else:
+                cache = _catalog_cache_all
+                cache_etag = _catalog_cache_all_etag
+                cache_expiration = _catalog_cache_all_expiration
+                cache_version = _catalog_cache_all_version
+
             if (
                 not force_refresh
                 and ttl > 0
-                and _catalog_cache
-                and _catalog_cache_etag
-                and _catalog_cache_expiration
-                and _catalog_cache_expiration > now
-                and _catalog_cache_version == current_version
+                and cache
+                and cache_etag
+                and cache_expiration
+                and cache_expiration > now
+                and cache_version == current_version
             ):
-                return _catalog_cache, _catalog_cache_etag
+                return cache, cache_etag
 
             # Загружаем данные из БД
             try:
                 data = await _load_catalog_from_db(db, only_available=only_available)
                 etag = _compute_catalog_etag(data)
             except Exception:
-                if _catalog_cache is not None and _catalog_cache_etag is not None:
-                    return _catalog_cache, _catalog_cache_etag
+                if cache is not None and cache_etag is not None:
+                    return cache, cache_etag
                 empty_catalog = CatalogResponse(categories=[], products=[])
                 return empty_catalog, "error-catalog"
 
             if ttl > 0:
-                _catalog_cache = data
-                _catalog_cache_etag = etag
-                _catalog_cache_expiration = now + timedelta(seconds=ttl)
-                _catalog_cache_version = current_version
+                if only_available:
+                    _catalog_cache_available = data
+                    _catalog_cache_available_etag = etag
+                    _catalog_cache_available_expiration = now + timedelta(seconds=ttl)
+                    _catalog_cache_available_version = current_version
+                else:
+                    _catalog_cache_all = data
+                    _catalog_cache_all_etag = etag
+                    _catalog_cache_all_expiration = now + timedelta(seconds=ttl)
+                    _catalog_cache_all_version = current_version
             else:
-                _catalog_cache = None
-                _catalog_cache_etag = None
-                _catalog_cache_expiration = None
-                _catalog_cache_version = None
+                if only_available:
+                    _catalog_cache_available = None
+                    _catalog_cache_available_etag = None
+                    _catalog_cache_available_expiration = None
+                    _catalog_cache_available_version = None
+                else:
+                    _catalog_cache_all = None
+                    _catalog_cache_all_etag = None
+                    _catalog_cache_all_expiration = None
+                    _catalog_cache_all_version = None
 
             return data, etag
     except Exception as e:
         logger.error(f"Критическая ошибка в fetch_catalog: {e}", exc_info=True)
         # Возвращаем кеш или пустой каталог
-        if _catalog_cache is not None and _catalog_cache_etag is not None:
-            return _catalog_cache, _catalog_cache_etag
+        if cache is not None and cache_etag is not None:
+            return cache, cache_etag
         empty_catalog = CatalogResponse(categories=[], products=[])
         return empty_catalog, "error-catalog"
 
 
 async def invalidate_catalog_cache(db: AsyncIOMotorDatabase | None = None):
     """Инвалидирует кэш каталога."""
-    global _catalog_cache, _catalog_cache_expiration, _catalog_cache_etag, _catalog_cache_version
-    _catalog_cache = None
-    _catalog_cache_expiration = None
-    _catalog_cache_etag = None
-    _catalog_cache_version = None
+    global (
+        _catalog_cache_available,
+        _catalog_cache_available_etag,
+        _catalog_cache_available_expiration,
+        _catalog_cache_available_version,
+        _catalog_cache_all,
+        _catalog_cache_all_etag,
+        _catalog_cache_all_expiration,
+        _catalog_cache_all_version,
+    )
+    # Инвалидируем оба кеша
+    _catalog_cache_available = None
+    _catalog_cache_available_expiration = None
+    _catalog_cache_available_etag = None
+    _catalog_cache_available_version = None
+    
+    _catalog_cache_all = None
+    _catalog_cache_all_expiration = None
+    _catalog_cache_all_etag = None
+    _catalog_cache_all_version = None
 
     # Очищаем Redis кэш
     try:
@@ -349,12 +422,19 @@ async def invalidate_catalog_cache(db: AsyncIOMotorDatabase | None = None):
         pass
 
     if db is not None:
-        _catalog_cache_version = await _bump_catalog_cache_version(db)
+        # Обновляем версию кеша - это инвалидирует все кеши
+        await _bump_catalog_cache_version(db)
 
 
 async def _refresh_catalog_cache(db: AsyncIOMotorDatabase):
+    """Обновляет оба кеша каталога в фоне."""
     try:
-        await fetch_catalog(db, force_refresh=True)
+        # Обновляем оба кеша параллельно
+        await asyncio.gather(
+            fetch_catalog(db, force_refresh=True, only_available=True),
+            fetch_catalog(db, force_refresh=True, only_available=False),
+            return_exceptions=True,
+        )
     except Exception:
         pass
 
@@ -481,14 +561,17 @@ async def get_admin_catalog(
     """
     Возвращает актуальный каталог для админки.
 
-    ETag/304 здесь отключены, чтобы администраторы сразу видели изменения
-    без зависимости от клиентского/прокси кэширования.
+    Использует кеш с проверкой версии - кеш автоматически инвалидируется
+    при любых изменениях каталога, поэтому админка всегда видит актуальные данные,
+    но не загружает их из БД каждый раз, что значительно ускоряет ответ.
     """
     try:
         # Админка загружает все товары, включая недоступные
-        catalog, etag = await fetch_catalog(db, force_refresh=True, only_available=False)
+        # НЕ используем force_refresh=True - кеш инвалидируется при изменениях,
+        # поэтому данные всегда актуальны, но загрузка из БД происходит только при необходимости
+        catalog, etag = await fetch_catalog(db, force_refresh=False, only_available=False)
         response = _build_catalog_response(catalog, etag)
-        # Админке всегда нужен свежий ответ, поэтому блокируем кэш.
+        # Админке всегда нужен свежий ответ, поэтому блокируем клиентский кэш.
         response.headers["Cache-Control"] = "no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
         return response
@@ -702,8 +785,27 @@ async def create_product(
     category = await db.categories.find_one({"_id": as_object_id(payload.category_id)}, {"_id": 1})
     if not category:
         raise HTTPException(status_code=400, detail="Категория не найдена")
+    
     data = payload.dict()
-    # Изображения уже сжаты на фронтенде, сохраняем как есть
+    
+    # Конвертируем base64 изображения в GridFS file_id
+    if data.get("image") and isinstance(data["image"], str) and data["image"].startswith("data:image"):
+        # Это base64 изображение, сохраняем в GridFS
+        image_file_id = await save_base64_image_to_gridfs(data["image"])
+        if image_file_id:
+            data["image"] = image_file_id
+        else:
+            # Если не удалось сохранить, удаляем поле
+            data.pop("image", None)
+    
+    if data.get("images") and isinstance(data["images"], list):
+        # Конвертируем список base64 изображений
+        image_ids = await save_base64_images_to_gridfs(data["images"])
+        if image_ids:
+            data["images"] = image_ids
+        else:
+            data.pop("images", None)
+    
     result = await db.products.insert_one(data)
     # Используем проекцию для минимизации загружаемых данных
     doc = await db.products.find_one(
@@ -751,7 +853,38 @@ async def update_product(
         if not category:
             raise HTTPException(status_code=400, detail="Категория не найдена")
     
-    # Изображения уже сжаты на фронтенде, обновляем как есть
+    # Конвертируем base64 изображения в GridFS file_id
+    if "image" in update_payload and update_payload["image"]:
+        if isinstance(update_payload["image"], str) and update_payload["image"].startswith("data:image"):
+            # Это base64 изображение, сохраняем в GridFS
+            # Сначала удаляем старое изображение если оно было
+            old_product = await db.products.find_one({"_id": product_oid}, {"image": 1})
+            if old_product and old_product.get("image"):
+                # Удаляем старое изображение из GridFS (опционально, можно оставить для истории)
+                pass
+            
+            image_file_id = await save_base64_image_to_gridfs(update_payload["image"])
+            if image_file_id:
+                update_payload["image"] = image_file_id
+            else:
+                # Если не удалось сохранить, удаляем поле из обновления
+                update_payload.pop("image", None)
+    
+    if "images" in update_payload and update_payload["images"]:
+        if isinstance(update_payload["images"], list) and len(update_payload["images"]) > 0:
+            # Проверяем, есть ли base64 изображения в списке
+            has_base64 = any(
+                isinstance(img, str) and img.startswith("data:image")
+                for img in update_payload["images"]
+            )
+            if has_base64:
+                # Конвертируем base64 изображения
+                image_ids = await save_base64_images_to_gridfs(update_payload["images"])
+                if image_ids:
+                    update_payload["images"] = image_ids
+                else:
+                    update_payload.pop("images", None)
+    
     # Обновляем с проекцией для минимизации данных
     doc = await db.products.find_one_and_update(
         {"_id": product_oid},
@@ -781,6 +914,34 @@ async def update_product(
     await cache_task
     asyncio.create_task(_refresh_catalog_cache(db))
     return product
+
+
+@router.get("/product/image/{file_id}")
+async def get_product_image(
+    file_id: str,
+):
+    """Получает изображение продукта из GridFS по file_id."""
+    try:
+        fs = get_gridfs()
+        loop = asyncio.get_event_loop()
+
+        # Получаем файл из GridFS (синхронная операция в executor)
+        grid_file = await loop.run_in_executor(None, lambda: fs.get(ObjectId(file_id)))
+        file_data = await loop.run_in_executor(None, grid_file.read)
+        filename = grid_file.filename or "product-image"
+        content_type = grid_file.content_type or "image/jpeg"
+
+        return Response(
+            content=file_data,
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Cache-Control": "public, max-age=31536000",  # Кешируем на 1 год
+            },
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при загрузке изображения продукта {file_id}: {e}")
+        raise HTTPException(status_code=404, detail=f"Изображение не найдено: {str(e)}")
 
 
 @router.delete(
