@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, List
 
-from pydantic import Field, field_validator, ConfigDict, AliasChoices
+from pydantic import Field, field_validator, ConfigDict, AliasChoices, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -94,14 +94,6 @@ class Settings(BaseSettings):
     @classmethod
     def split_admin_ids(cls, value):
         """Разбивает строку ADMIN_IDS на список целых чисел."""
-        # Если значение не передано, пытаемся загрузить из переменных окружения
-        if value is None:
-            env_value = os.getenv("ADMIN_IDS")
-            if env_value:
-                value = env_value
-            else:
-                return []
-        
         if isinstance(value, list):
             return [int(v) for v in value]
         # Обрабатываем строку - убираем пробелы и разбиваем по запятой
@@ -121,6 +113,28 @@ class Settings(BaseSettings):
                         pass
             return ids
         return []
+    
+    @model_validator(mode="after")
+    def load_admin_ids_from_env(self):
+        """Загружает ADMIN_IDS из переменных окружения, если не было загружено автоматически."""
+        if not self.admin_ids:
+            env_value = os.getenv("ADMIN_IDS")
+            if env_value:
+                str_value = env_value.strip()
+                if str_value:
+                    # Разбиваем по запятой и обрабатываем каждый элемент
+                    ids = []
+                    for v in str_value.split(","):
+                        v = v.strip()
+                        if v:
+                            try:
+                                ids.append(int(v))
+                            except ValueError:
+                                # Пропускаем некорректное значение
+                                pass
+                    if ids:
+                        self.admin_ids = ids
+        return self
 
     @field_validator("upload_dir", mode="before")
     @classmethod
@@ -208,27 +222,9 @@ def get_settings() -> Settings:
         except Exception as e:
             logger.debug(f"   Ошибка чтения .env файла: {e}")
     
-    # Создаем Settings с явной передачей переменных окружения
+    # Создаем Settings - model_validator автоматически загрузит ADMIN_IDS из os.environ, если нужно
     try:
-        # В Pydantic v2 BaseSettings автоматически загружает переменные окружения
-        # Но мы можем явно передать их через _env_file или через model_config
         settings = Settings()
-        
-        # Дополнительная проверка: пытаемся загрузить ADMIN_IDS напрямую из os.environ
-        # если он не загрузился через Settings
-        if not settings.admin_ids and admin_ids_from_env:
-            logger.warning("⚠️ ADMIN_IDS найден в os.environ, но не загрузился через Settings!")
-            logger.warning(f"   Попытка ручной загрузки из: {repr(admin_ids_from_env)}")
-            # Пытаемся распарсить вручную
-            try:
-                if admin_ids_from_env.strip():
-                    parsed_ids = [int(v.strip()) for v in admin_ids_from_env.split(",") if v.strip()]
-                    if parsed_ids:
-                        logger.warning(f"   Успешно распарсено вручную: {parsed_ids}")
-                        # Обновляем settings (но это не сработает из-за кэширования)
-                        # Вместо этого просто логируем
-            except Exception as parse_error:
-                logger.error(f"   Ошибка при парсинге: {parse_error}")
     except Exception as e:
         logger.error(f"❌ Ошибка при создании Settings: {e}", exc_info=True)
         raise
