@@ -37,7 +37,7 @@ from ..schemas import (
     ProductCreate,
     ProductUpdate,
 )
-from ..utils import as_object_id, serialize_doc
+from ..utils import as_object_id, compress_base64_image, serialize_doc
 
 router = APIRouter(tags=["catalog"])
 logger = logging.getLogger(__name__)
@@ -703,6 +703,16 @@ async def create_product(
     if not category:
         raise HTTPException(status_code=400, detail="Категория не найдена")
     data = payload.dict()
+    
+    # Сжимаем изображения перед сохранением
+    if data.get("image"):
+        data["image"] = compress_base64_image(data["image"])
+    if data.get("images"):
+        data["images"] = [
+            compress_base64_image(img) if img else img
+            for img in data["images"]
+        ]
+    
     result = await db.products.insert_one(data)
     # Используем проекцию для минимизации загружаемых данных
     doc = await db.products.find_one(
@@ -749,6 +759,15 @@ async def update_product(
         )
         if not category:
             raise HTTPException(status_code=400, detail="Категория не найдена")
+    
+    # Сжимаем изображения перед обновлением, если они переданы
+    if "image" in update_payload and update_payload["image"]:
+        update_payload["image"] = compress_base64_image(update_payload["image"])
+    if "images" in update_payload and update_payload["images"]:
+        update_payload["images"] = [
+            compress_base64_image(img) if img else img
+            for img in update_payload["images"]
+        ]
     
     # Обновляем с проекцией для минимизации данных
     doc = await db.products.find_one_and_update(

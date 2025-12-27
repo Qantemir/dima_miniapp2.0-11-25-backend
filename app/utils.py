@@ -1,10 +1,14 @@
 """Утилиты для работы с базой данных и общих операций."""
 
+import base64
+import io
 import logging
+from typing import Optional
 
 from bson import ObjectId
 from gridfs import GridFS
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from PIL import Image
 from pymongo import MongoClient
 
 from .config import settings
@@ -281,3 +285,135 @@ async def permanently_delete_order_entry(
         logger.info(f"Заказ {order_id} окончательно удален")
     except Exception as e:
         logger.error(f"Ошибка при окончательном удалении заказа {order_id}: {e}")
+
+
+def compress_image_bytes(
+    image_bytes: bytes,
+    max_width: int = 1920,
+    max_height: int = 1920,
+    quality: int = 85,
+    format: str = "JPEG"
+) -> bytes:
+    """
+    Сжимает изображение из бинарных данных.
+    
+    Args:
+        image_bytes: Бинарные данные изображения
+        max_width: Максимальная ширина (по умолчанию 1920px)
+        max_height: Максимальная высота (по умолчанию 1920px)
+        quality: Качество JPEG (1-100, по умолчанию 85)
+        format: Формат выходного изображения (JPEG, PNG, WEBP)
+        
+    Returns:
+        Сжатые бинарные данные изображения
+    """
+    try:
+        # Открываем изображение из байтов
+        img = Image.open(io.BytesIO(image_bytes))
+        
+        # Конвертируем RGBA в RGB для JPEG (если нужно)
+        if format == "JPEG" and img.mode in ("RGBA", "LA", "P"):
+            # Создаем белый фон для прозрачных изображений
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            if img.mode == "P":
+                img = img.convert("RGBA")
+            background.paste(img, mask=img.split()[-1] if img.mode == "RGBA" else None)
+            img = background
+        elif img.mode != "RGB" and format == "JPEG":
+            img = img.convert("RGB")
+        
+        # Изменяем размер, если изображение слишком большое
+        if img.width > max_width or img.height > max_height:
+            img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+        
+        # Сохраняем в буфер
+        output = io.BytesIO()
+        
+        if format == "JPEG":
+            img.save(output, format="JPEG", quality=quality, optimize=True)
+        elif format == "PNG":
+            img.save(output, format="PNG", optimize=True)
+        elif format == "WEBP":
+            img.save(output, format="WEBP", quality=quality, method=6)
+        else:
+            img.save(output, format=format, quality=quality)
+        
+        compressed_bytes = output.getvalue()
+        output.close()
+        
+        # Логируем результат сжатия
+        original_size = len(image_bytes)
+        compressed_size = len(compressed_bytes)
+        reduction = ((original_size - compressed_size) / original_size) * 100 if original_size > 0 else 0
+        logger.info(
+            f"Изображение сжато: {original_size} → {compressed_size} байт "
+            f"({reduction:.1f}% уменьшение)"
+        )
+        
+        return compressed_bytes
+    except Exception as e:
+        logger.error(f"Ошибка при сжатии изображения: {e}")
+        # В случае ошибки возвращаем оригинальные данные
+        return image_bytes
+
+
+def compress_base64_image(
+    base64_string: str,
+    max_width: int = 1920,
+    max_height: int = 1920,
+    quality: int = 85
+) -> Optional[str]:
+    """
+    Сжимает изображение из base64 строки и возвращает сжатую base64 строку.
+    
+    Args:
+        base64_string: Base64 строка изображения (может содержать data URL префикс)
+        max_width: Максимальная ширина (по умолчанию 1920px)
+        max_height: Максимальная высота (по умолчанию 1920px)
+        quality: Качество JPEG (1-100, по умолчанию 85)
+        
+    Returns:
+        Сжатая base64 строка с data URL префиксом или None в случае ошибки
+    """
+    if not base64_string:
+        return None
+    
+    try:
+        # Убираем data URL префикс, если есть (data:image/jpeg;base64,...)
+        if "," in base64_string:
+            header, data = base64_string.split(",", 1)
+            # Определяем формат из заголовка
+            if "jpeg" in header.lower() or "jpg" in header.lower():
+                format = "JPEG"
+            elif "png" in header.lower():
+                format = "PNG"
+            elif "webp" in header.lower():
+                format = "WEBP"
+            else:
+                format = "JPEG"  # По умолчанию JPEG
+        else:
+            data = base64_string
+            format = "JPEG"  # По умолчанию JPEG
+        
+        # Декодируем base64
+        image_bytes = base64.b64decode(data)
+        
+        # Сжимаем изображение
+        compressed_bytes = compress_image_bytes(
+            image_bytes,
+            max_width=max_width,
+            max_height=max_height,
+            quality=quality,
+            format=format
+        )
+        
+        # Кодируем обратно в base64
+        compressed_base64 = base64.b64encode(compressed_bytes).decode("utf-8")
+        
+        # Возвращаем с data URL префиксом
+        mime_type = f"image/{format.lower()}" if format != "JPEG" else "image/jpeg"
+        return f"data:{mime_type};base64,{compressed_base64}"
+    except Exception as e:
+        logger.error(f"Ошибка при сжатии base64 изображения: {e}")
+        # В случае ошибки возвращаем оригинальную строку
+        return base64_string

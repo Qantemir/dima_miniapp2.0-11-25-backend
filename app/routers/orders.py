@@ -1,6 +1,7 @@
 """Модуль для работы с заказами."""
 
 import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -14,9 +15,10 @@ from ..database import get_db
 from ..notifications import notify_admins_new_order
 from ..schemas import Cart, Order, OrderStatus
 from ..security import TelegramUser, get_current_user
-from ..utils import as_object_id, ensure_store_is_awake, get_gridfs, serialize_doc
+from ..utils import as_object_id, compress_image_bytes, ensure_store_is_awake, get_gridfs, serialize_doc
 
 router = APIRouter(tags=["orders"])
+logger = logging.getLogger(__name__)
 
 
 async def get_cart(db: AsyncIOMotorDatabase, user_id: int) -> Cart | None:
@@ -67,6 +69,28 @@ async def _save_payment_receipt(db: AsyncIOMotorDatabase, file: UploadFile) -> t
             status_code=400,
             detail=f"Файл слишком большой. Максимум {settings.max_receipt_size_mb} МБ",
         )
+
+    # Сжимаем изображения перед сохранением (PDF не сжимаем)
+    is_image = extension in {".jpg", ".jpeg", ".png", ".webp"} or (
+        content_type and content_type.startswith("image/") and "pdf" not in content_type
+    )
+    if is_image:
+        # Определяем формат для сжатия
+        if extension in {".jpg", ".jpeg"} or "jpeg" in content_type:
+            format = "JPEG"
+        elif extension == ".png" or "png" in content_type:
+            format = "PNG"
+        elif extension == ".webp" or "webp" in content_type:
+            format = "WEBP"
+        else:
+            format = "JPEG"  # По умолчанию
+        
+        # Сжимаем изображение
+        try:
+            file_bytes = compress_image_bytes(file_bytes, max_width=1920, max_height=1920, quality=85, format=format)
+        except Exception as e:
+            # В случае ошибки сжатия продолжаем с оригинальным файлом
+            logger.warning(f"Не удалось сжать изображение чека: {e}")
 
     # Сохраняем в GridFS используя синхронный клиент
     # Выполняем в executor, чтобы не блокировать event loop
