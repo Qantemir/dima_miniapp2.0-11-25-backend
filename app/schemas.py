@@ -182,12 +182,8 @@ class UpdateCartItemRequest(BaseModel):
 class OrderStatus(str, Enum):
     """OrderStatus модель."""
 
-    NEW = "новый"
-    PROCESSING = "в обработке"
     ACCEPTED = "принят"
-    SHIPPED = "выехал"
-    DONE = "завершён"
-    CANCELED = "отменён"
+    REJECTED = "отказано"
 
 
 class OrderItem(BaseModel):
@@ -212,7 +208,8 @@ class Order(BaseModel):
     customer_phone: str
     delivery_address: str
     comment: Optional[str] = None
-    status: OrderStatus = OrderStatus.NEW
+    status: OrderStatus = OrderStatus.ACCEPTED
+    rejection_reason: Optional[str] = None  # Причина отказа (если статус "отказано")
     items: List[OrderItem]
     total_amount: float
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -250,6 +247,7 @@ class UpdateStatusRequest(BaseModel):
     """UpdateStatusRequest модель."""
 
     status: OrderStatus
+    rejection_reason: Optional[str] = None  # Причина отказа (обязательна для статуса "отказано")
 
 
 class BroadcastRequest(BaseModel):

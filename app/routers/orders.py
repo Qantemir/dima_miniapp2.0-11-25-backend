@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Response, UploadFile, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from ..config import settings
@@ -100,6 +100,7 @@ async def _save_payment_receipt(db: AsyncIOMotorDatabase, file: UploadFile) -> t
 
 @router.post("/order", response_model=Order, status_code=status.HTTP_201_CREATED)
 async def create_order(
+    background_tasks: BackgroundTasks,
     name: str = Form(...),
     phone: str = Form(...),
     address: str = Form(...),
@@ -140,10 +141,10 @@ async def create_order(
         "customer_phone": phone,
         "delivery_address": address,
         "comment": comment,
-        "status": OrderStatus.PROCESSING.value,
+        "status": OrderStatus.ACCEPTED.value,
         "items": [item.dict() for item in cart.items],  # Преобразуем CartItem объекты в словари
         "total_amount": cart.total_amount,
-        "can_edit_address": True,
+        "can_edit_address": False,  # Адрес нельзя редактировать после создания
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
         "payment_receipt_file_id": receipt_file_id,  # ID файла в GridFS
@@ -171,122 +172,27 @@ async def create_order(
     doc = await order_doc_task
     order = Order(**serialize_doc(doc) | {"id": str(doc["_id"])})
 
-    # Отправляем уведомление администраторам о новом заказе
-    try:
-        await notify_admins_new_order(
-            order_id=order.id,
-            customer_name=name,
-            customer_phone=phone,
-            delivery_address=address,
-            total_amount=cart.total_amount,
-            items=[item.dict() for item in cart.items],
-            user_id=user_id,
-            receipt_file_id=receipt_file_id,
-            db=db,
-        )
-    except Exception:
-        # Игнорируем ошибки уведомлений для скорости (не критично)
-        pass
+    # Отправляем уведомление администраторам в фоновом режиме для скорости
+    background_tasks.add_task(
+        notify_admins_new_order,
+        order_id=order.id,
+        customer_name=name,
+        customer_phone=phone,
+        delivery_address=address,
+        total_amount=cart.total_amount,
+        items=[item.dict() for item in cart.items],
+        user_id=user_id,
+        receipt_file_id=receipt_file_id,
+        db=db,
+    )
 
     return order
 
 
-@router.get("/order/last", response_model=Order | None)
-async def get_last_order(
-    current_user: TelegramUser = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db),
-):
-    """Получает последний заказ пользователя."""
-    # Используем индекс для быстрого поиска последнего заказа
-    # Составной индекс [("user_id", 1), ("created_at", -1)] уже создан в database.py
-    doc = await db.orders.find_one(
-        {"user_id": current_user.id},
-        sort=[("created_at", -1)],
-    )
-    if not doc:
-        return None
-    return Order(**serialize_doc(doc) | {"id": str(doc["_id"])})
+# Эндпоинты для просмотра заказов пользователем удалены
 
 
-@router.get("/order/{order_id}", response_model=Order)
-async def get_order_by_id(
-    order_id: str,
-    current_user: TelegramUser = Depends(get_current_user),
-    db: AsyncIOMotorDatabase = Depends(get_db),
-):
-    """Получает заказ по ID."""
-    doc = await db.orders.find_one(
-        {"_id": as_object_id(order_id), "user_id": current_user.id},
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
-    return Order(**serialize_doc(doc) | {"id": str(doc["_id"])})
+# Эндпоинт для получения чека пользователем удален
 
 
-@router.get("/order/{order_id}/receipt")
-async def get_order_receipt(
-    order_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: TelegramUser = Depends(get_current_user),
-):
-    """Получает чек заказа из GridFS."""
-    doc = await db.orders.find_one(
-        {"_id": as_object_id(order_id), "user_id": current_user.id},
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
-
-    receipt_file_id = doc.get("payment_receipt_file_id")
-    if not receipt_file_id:
-        raise HTTPException(status_code=404, detail="Чек не найден")
-
-    try:
-        fs = get_gridfs()
-        loop = asyncio.get_event_loop()
-
-        # Получаем файл из GridFS (синхронная операция в executor)
-        grid_file = await loop.run_in_executor(None, lambda: fs.get(ObjectId(receipt_file_id)))
-        file_data = await loop.run_in_executor(None, grid_file.read)
-        filename = grid_file.filename or "receipt"
-        content_type = grid_file.content_type or "application/octet-stream"
-
-        return Response(
-            content=file_data,
-            media_type=content_type,
-            headers={
-                "Content-Disposition": f'inline; filename="{filename}"',
-            },
-        )
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Не удалось загрузить чек: {str(e)}")
-
-
-@router.patch("/order/{order_id}/address", response_model=Order)
-async def update_order_address(
-    order_id: str,
-    payload: UpdateAddressRequest,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    current_user: TelegramUser = Depends(get_current_user),
-):
-    """Обновляет адрес доставки заказа."""
-    doc = await db.orders.find_one({"_id": as_object_id(order_id)})
-    if not doc or doc["user_id"] != current_user.id:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
-    editable_statuses = {
-        OrderStatus.PROCESSING.value,
-    }
-    if doc["status"] not in editable_statuses:
-        raise HTTPException(status_code=400, detail="Адрес можно менять только для новых заказов или заказов в работе")
-
-    updated = await db.orders.find_one_and_update(
-        {"_id": as_object_id(order_id)},
-        {
-            "$set": {
-                "delivery_address": payload.address,
-                "updated_at": datetime.utcnow(),
-                "can_edit_address": True,
-            }
-        },
-        return_document=True,
-    )
-    return Order(**serialize_doc(updated) | {"id": str(updated["_id"])})
+# Эндпоинт для редактирования адреса удален - адрес нельзя менять после создания заказа

@@ -149,8 +149,12 @@ async def update_order_status(
     old_status = old_doc.get("status")
     new_status = payload.status.value
 
-    # Если заказ отменяется, возвращаем товары на склад
-    if new_status == OrderStatus.CANCELED.value and old_status != OrderStatus.CANCELED.value:
+    # Валидация: для статуса "отказано" обязательна причина
+    if new_status == OrderStatus.REJECTED.value and not payload.rejection_reason:
+        raise HTTPException(status_code=400, detail="Для статуса 'отказано' необходимо указать причину отказа")
+
+    # Если заказ отклоняется, возвращаем товары на склад
+    if new_status == OrderStatus.REJECTED.value and old_status != OrderStatus.REJECTED.value:
         items = old_doc.get("items", [])
         for item in items:
             if item.get("variant_id"):
@@ -158,25 +162,20 @@ async def update_order_status(
                     db, item.get("product_id"), item.get("variant_id"), item.get("quantity", 0)
                 )
 
-    editable_statuses = {
-        OrderStatus.PROCESSING.value,
-    }
-    should_archive = new_status == OrderStatus.DONE.value
-
     update_operations: dict[str, dict] = {
         "$set": {
             "status": payload.status.value,
             "updated_at": datetime.utcnow(),
-            "can_edit_address": payload.status.value in editable_statuses,
+            "can_edit_address": False,  # Адрес нельзя редактировать после создания
         }
     }
 
-    # Если заказ был завершён и мы изменяем статус на другой, убираем метку deleted_at полностью
-    if old_status == OrderStatus.DONE.value and new_status != OrderStatus.DONE.value:
-        update_operations["$unset"] = {"deleted_at": ""}
-    # Если заказ завершается, сразу помечаем как удаленный (в одной атомарной операции)
-    elif should_archive:
-        update_operations["$set"]["deleted_at"] = datetime.utcnow()
+    # Если статус "отказано", сохраняем причину отказа
+    if new_status == OrderStatus.REJECTED.value:
+        update_operations["$set"]["rejection_reason"] = payload.rejection_reason
+    else:
+        # Если статус меняется с "отказано" на другой, убираем причину отказа
+        update_operations["$unset"] = {"rejection_reason": ""}
 
     # Атомарно обновляем заказ - только один раз, без дополнительных операций
     doc = await db.orders.find_one_and_update(
@@ -193,12 +192,14 @@ async def update_order_status(
     user_id = doc.get("user_id")
     if user_id and old_status != new_status:
         try:
+            rejection_reason = doc.get("rejection_reason") if new_status == OrderStatus.REJECTED.value else None
             asyncio.create_task(
                 notify_customer_order_status(
                     user_id=user_id,
                     order_id=order_id,
                     order_status=new_status,
                     customer_name=doc.get("customer_name"),
+                    rejection_reason=rejection_reason,
                 )
             )
         except Exception:
@@ -223,21 +224,27 @@ async def quick_accept_order(
     if not doc:
         raise HTTPException(status_code=404, detail="Заказ не найден")
 
-    # Проверяем, что заказ еще в обработке
-    if doc.get("status") != OrderStatus.PROCESSING.value:
-        raise HTTPException(status_code=400, detail=f"Заказ уже обработан. Текущий статус: {doc.get('status')}")
+    # Проверяем, что заказ еще не обработан
+    current_status = doc.get("status")
+    if current_status in [OrderStatus.ACCEPTED.value, OrderStatus.REJECTED.value]:
+        raise HTTPException(status_code=400, detail=f"Заказ уже обработан. Текущий статус: {current_status}")
 
     # Обновляем статус на "принят"
     old_status = doc.get("status")
+    update_ops = {
+        "$set": {
+            "status": OrderStatus.ACCEPTED.value,
+            "updated_at": datetime.utcnow(),
+            "can_edit_address": False,
+        }
+    }
+    # Убираем причину отказа если она была
+    if old_status == OrderStatus.REJECTED.value:
+        update_ops["$unset"] = {"rejection_reason": ""}
+    
     updated = await db.orders.find_one_and_update(
         {"_id": as_object_id(order_id)},
-        {
-            "$set": {
-                "status": OrderStatus.ACCEPTED.value,
-                "updated_at": datetime.utcnow(),
-                "can_edit_address": False,
-            }
-        },
+        update_ops,
         return_document=True,
     )
 
@@ -253,6 +260,7 @@ async def quick_accept_order(
                 order_id=order_id,
                 order_status=OrderStatus.ACCEPTED.value,
                 customer_name=updated.get("customer_name"),
+                rejection_reason=None,
             )
         except Exception as e:
             import logging

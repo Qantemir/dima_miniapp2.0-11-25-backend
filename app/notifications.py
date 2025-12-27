@@ -221,11 +221,7 @@ async def _send_notification_with_receipt(
                     [{"text": "💬 Чат с клиентом", "url": chat_link}],
                     [
                         {"text": "✅ Принят", "callback_data": f"status|{order_id}|принят"},
-                        {"text": "🚚 Выехал", "callback_data": f"status|{order_id}|выехал"},
-                    ],
-                    [
-                        {"text": "🎉 Завершён", "callback_data": f"status|{order_id}|завершён"},
-                        {"text": "❌ Отменить", "callback_data": f"status|{order_id}|отменён"},
+                        {"text": "❌ Отказано", "callback_data": f"status|{order_id}|отказано"},
                     ],
                 ]
             }
@@ -266,11 +262,7 @@ async def _send_notification_with_receipt(
                     [{"text": "💬 Чат с клиентом", "url": chat_link}],
                     [
                         {"text": "✅ Принят", "callback_data": f"status|{order_id}|принят"},
-                        {"text": "🚚 Выехал", "callback_data": f"status|{order_id}|выехал"},
-                    ],
-                    [
-                        {"text": "🎉 Завершён", "callback_data": f"status|{order_id}|завершён"},
-                        {"text": "❌ Отменить", "callback_data": f"status|{order_id}|отменён"},
+                        {"text": "❌ Отказано", "callback_data": f"status|{order_id}|отказано"},
                     ],
                 ]
             }
@@ -299,6 +291,7 @@ async def notify_customer_order_status(
     order_id: str,
     order_status: str,
     customer_name: str | None = None,
+    rejection_reason: str | None = None,
 ) -> None:
     """
     Отправляет уведомление клиенту об изменении статуса заказа.
@@ -308,6 +301,7 @@ async def notify_customer_order_status(
         order_id: ID заказа
         order_status: Новый статус заказа
         customer_name: Имя клиента (опционально, для персонализации)
+        rejection_reason: Причина отказа (если статус "отказано")
     """
     settings = get_settings()
 
@@ -315,19 +309,16 @@ async def notify_customer_order_status(
         return
 
     # Формируем сообщение в зависимости от статуса
-    status_messages = {
-        "принят": "✅ Ваш заказ принят в обработку!",
-        "в обработке": "🔄 Ваш заказ обрабатывается...",
-        "выехал": "🚚 Ваш заказ выехал! Скоро будет доставлен.",
-        "завершён": "🎉 Ваш заказ завершён! Спасибо за покупку!",
-        "отменён": "❌ Ваш заказ отменён.",
-    }
-
-    # Получаем сообщение для статуса
-    status_message = status_messages.get(order_status, f"Статус вашего заказа изменён: {order_status}")
+    if order_status == "принят":
+        status_message = "✅ Ваш заказ принят! Мы привезем его в течение 2 часов."
+    elif order_status == "отказано":
+        reason_text = f"\n\nПричина: {rejection_reason}" if rejection_reason else ""
+        status_message = f"❌ Ваш заказ отклонен.{reason_text}"
+    else:
+        status_message = f"Статус вашего заказа изменён: {order_status}"
 
     # Формируем полное сообщение
-    message = f"{status_message}\n\n" f"📋 Заказ: `{order_id[-6:]}`\n" f"📊 Статус: *{order_status}*"
+    message = f"{status_message}\n\n📋 Заказ: `{order_id[-6:]}`\n📊 Статус: *{order_status}*"
 
     # Отправляем уведомление клиенту
     try:

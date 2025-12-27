@@ -165,11 +165,8 @@ async def handle_bot_webhook(
 
             # Проверяем, что статус валидный
             valid_statuses = {
-                OrderStatus.PROCESSING.value,
                 OrderStatus.ACCEPTED.value,
-                OrderStatus.SHIPPED.value,
-                OrderStatus.DONE.value,
-                OrderStatus.CANCELED.value,
+                OrderStatus.REJECTED.value,
             }
 
             if new_status_value not in valid_statuses:
@@ -187,12 +184,12 @@ async def handle_bot_webhook(
                 )
                 return {"ok": True}
 
-            # Если заказ отменяется, возвращаем товары на склад
+            # Если заказ отклоняется, возвращаем товары на склад
             from datetime import datetime
 
             from ..utils import restore_variant_quantity
 
-            if new_status_value == OrderStatus.CANCELED.value and current_status != OrderStatus.CANCELED.value:
+            if new_status_value == OrderStatus.REJECTED.value and current_status != OrderStatus.REJECTED.value:
                 items = doc.get("items", [])
                 for item in items:
                     if item.get("variant_id"):
@@ -200,13 +197,6 @@ async def handle_bot_webhook(
                             db, item.get("product_id"), item.get("variant_id"), item.get("quantity", 0)
                         )
 
-            # Определяем, можно ли редактировать адрес
-            editable_statuses = {
-                OrderStatus.PROCESSING.value,
-            }
-            can_edit_address = new_status_value in editable_statuses
-
-            should_archive = new_status_value == OrderStatus.DONE.value
             old_status = current_status
 
             # Формируем операцию обновления
@@ -214,16 +204,19 @@ async def handle_bot_webhook(
                 "$set": {
                     "status": new_status_value,
                     "updated_at": datetime.utcnow(),
-                    "can_edit_address": can_edit_address,
+                    "can_edit_address": False,  # Адрес нельзя редактировать после создания
                 }
             }
 
-            # Если заказ был завершён и мы изменяем статус на другой, убираем метку deleted_at полностью
-            if old_status == OrderStatus.DONE.value and new_status_value != OrderStatus.DONE.value:
-                update_operations["$unset"] = {"deleted_at": ""}
-            # Если заказ завершается, сразу помечаем как удаленный (в одной атомарной операции)
-            elif should_archive:
-                update_operations["$set"]["deleted_at"] = datetime.utcnow()
+            # Если статус "отказано", нужно запросить причину (но через кнопки это не сделать, поэтому просто обновляем)
+            # Для отказа через кнопки причина будет пустой, админ может указать её позже через админку
+            if new_status_value == OrderStatus.REJECTED.value:
+                # Если причина не указана, оставляем пустой (админ может указать позже)
+                if not doc.get("rejection_reason"):
+                    update_operations["$set"]["rejection_reason"] = "Отклонено через кнопку в Telegram"
+            else:
+                # Если статус меняется с "отказано" на другой, убираем причину отказа
+                update_operations["$unset"] = {"rejection_reason": ""}
 
             # Атомарно обновляем заказ - только один раз, без дополнительных операций
             try:
@@ -242,11 +235,8 @@ async def handle_bot_webhook(
             if updated:
                 # Формируем сообщение подтверждения
                 status_messages = {
-                    OrderStatus.PROCESSING.value: "🔄 Статус изменён на 'В обработке'",
                     OrderStatus.ACCEPTED.value: "✅ Заказ принят!",
-                    OrderStatus.SHIPPED.value: "🚚 Заказ выехал!",
-                    OrderStatus.DONE.value: "🎉 Заказ завершён!",
-                    OrderStatus.CANCELED.value: "❌ Заказ отменён!",
+                    OrderStatus.REJECTED.value: "❌ Заказ отклонён!",
                 }
                 confirm_message = status_messages.get(new_status_value, f"Статус изменён на: {new_status_value}")
 
@@ -262,11 +252,13 @@ async def handle_bot_webhook(
                 customer_user_id = updated.get("user_id")
                 if customer_user_id and old_status != new_status_value:
                     try:
+                        rejection_reason = updated.get("rejection_reason") if new_status_value == OrderStatus.REJECTED.value else None
                         await notify_customer_order_status(
                             user_id=customer_user_id,
                             order_id=order_id,
                             order_status=new_status_value,
                             customer_name=updated.get("customer_name"),
+                            rejection_reason=rejection_reason,
                         )
                     except Exception as e:
                         logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
@@ -326,15 +318,7 @@ async def handle_bot_webhook(
                 await _answer_callback_query(callback_query_id, "Заказ не найден", show_alert=True)
                 return {"ok": True}
 
-            # Проверяем, что заказ можно отменить
-            current_status = doc.get("status")
-            if current_status in {OrderStatus.SHIPPED.value, OrderStatus.DONE.value, OrderStatus.CANCELED.value}:
-                await _answer_callback_query(
-                    callback_query_id, f"Заказ нельзя отменить. Текущий статус: {current_status}", show_alert=True
-                )
-                return {"ok": True}
-
-            # Обновляем статус на "отменён" и возвращаем товары на склад
+            # Обновляем статус на "отказано" и возвращаем товары на склад
             from datetime import datetime
 
             from ..utils import restore_variant_quantity
@@ -350,9 +334,10 @@ async def handle_bot_webhook(
                 {"_id": as_object_id(order_id)},
                 {
                     "$set": {
-                        "status": OrderStatus.CANCELED.value,
+                        "status": OrderStatus.REJECTED.value,
                         "updated_at": datetime.utcnow(),
                         "can_edit_address": False,
+                        "rejection_reason": "Отклонено через кнопку в Telegram",
                     }
                 },
                 return_document=True,
@@ -360,7 +345,7 @@ async def handle_bot_webhook(
 
             if updated:
                 # Отвечаем на callback
-                await _answer_callback_query(callback_query_id, "❌ Заказ отменён!", show_alert=False)
+                await _answer_callback_query(callback_query_id, "❌ Заказ отклонён!", show_alert=False)
 
                 # Обновляем сообщение, убирая кнопки
                 await _edit_message_reply_markup(
@@ -374,8 +359,9 @@ async def handle_bot_webhook(
                         await notify_customer_order_status(
                             user_id=customer_user_id,
                             order_id=order_id,
-                            order_status=OrderStatus.CANCELED.value,
+                            order_status=OrderStatus.REJECTED.value,
                             customer_name=updated.get("customer_name"),
+                            rejection_reason=updated.get("rejection_reason"),
                         )
                     except Exception as e:
                         logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
