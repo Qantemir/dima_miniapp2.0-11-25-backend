@@ -520,7 +520,9 @@ async def get_admin_category_detail(
     products_cursor = db.products.find({"category_id": {"$in": list(candidate_values)}})
     products_docs = await products_cursor.to_list(length=None)
 
-    category_model = Category(**serialize_doc(category_doc) | {"id": str(category_doc["_id"])})
+    serialized_category = serialize_doc(category_doc)
+    serialized_category.pop("_id", None)  # Удаляем _id, так как используем id
+    category_model = Category(**serialized_category | {"id": str(category_doc["_id"])})
     products_models = []
     for doc in products_docs:
         try:
@@ -565,7 +567,9 @@ async def create_category(
         raise HTTPException(status_code=500, detail="Ошибка при создании категории")
     await invalidate_catalog_cache(db)
     await _refresh_catalog_cache(db)
-    return Category(**serialize_doc(doc) | {"id": str(doc["_id"])})
+    serialized = serialize_doc(doc)
+    serialized.pop("_id", None)  # Удаляем _id, так как используем id
+    return Category(**serialized | {"id": str(doc["_id"])})
 
 
 @router.patch("/admin/category/{category_id}", response_model=Category)
@@ -607,7 +611,9 @@ async def update_category(
         raise HTTPException(status_code=404, detail="Категория не найдена")
     await invalidate_catalog_cache(db)
     await _refresh_catalog_cache(db)
-    return Category(**serialize_doc(result) | {"id": str(result["_id"])})
+    serialized = serialize_doc(result)
+    serialized.pop("_id", None)  # Удаляем _id, так как используем id
+    return Category(**serialized | {"id": str(result["_id"])})
 
 
 @router.delete(
