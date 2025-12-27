@@ -120,9 +120,6 @@ REDIS_URL=redis://localhost:6379/0
 TELEGRAM_BOT_TOKEN=your_bot_token
 ADMIN_IDS=123456789,987654321
 
-# Security
-JWT_SECRET=your-secret-key-change-in-production
-
 # URLs
 NEXT_PUBLIC_VITE_API_URL=/api
 NEXT_PUBLIC_VITE_PUBLIC_URL=http://localhost:8000

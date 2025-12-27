@@ -122,21 +122,6 @@ def _validate_hash(parsed_data: dict[str, str]) -> dict[str, Any]:
     return user_payload
 
 
-def _build_dev_user(dev_user_id: int | None) -> TelegramUser:
-    fallback_dev_id = dev_user_id or settings.default_dev_user_id
-    if fallback_dev_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Dev user недоступен: отсутствует идентификатор",
-        )
-    if settings.dev_allowed_user_ids and fallback_dev_id not in settings.dev_allowed_user_ids:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Dev user не разрешён для текущей конфигурации",
-        )
-    return TelegramUser(id=fallback_dev_id)
-
-
 async def get_current_user(
     telegram_init_data: str | None = Header(None, alias="X-Telegram-Init-Data"),
     dev_user_id: str | None = Header(None, convert_underscores=False, alias="X-Dev-User-Id"),

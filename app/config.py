@@ -31,20 +31,14 @@ class Settings(BaseSettings):
         return self._admin_ids_set_cache
 
     telegram_bot_token: str | None = Field(None, env="TELEGRAM_BOT_TOKEN")
-    jwt_secret: str = Field("change-me", env="JWT_SECRET")
+    # Значения по умолчанию, можно переопределить через env при необходимости
     upload_dir: Path = Field(ROOT_DIR / "uploads", env="UPLOAD_DIR")
-    max_receipt_size_mb: int = Field(10, env="MAX_RECEIPT_SIZE_MB")
-    telegram_data_ttl_seconds: int = Field(300, env="TELEGRAM_DATA_TTL_SECONDS")
-    allow_dev_requests: bool = Field(True, env="ALLOW_DEV_REQUESTS")
-    dev_allowed_user_ids: Any = Field(default_factory=list, env="DEV_ALLOWED_USER_IDS")
-    default_dev_user_id: int | None = Field(1, env="DEFAULT_DEV_USER_ID")
-    enforce_telegram_signature: bool = Field(False, env="ENFORCE_TELEGRAM_SIGNATURE")
-    catalog_cache_ttl_seconds: int = Field(
-        600, env="CATALOG_CACHE_TTL_SECONDS"
-    )  # 10 минут для максимальной производительности
-    broadcast_batch_size: int = Field(25, env="BROADCAST_BATCH_SIZE")
-    broadcast_concurrency: int = Field(10, env="BROADCAST_CONCURRENCY")
-    environment: str = Field("development", env="ENVIRONMENT")
+    max_receipt_size_mb: int = Field(10, env="MAX_RECEIPT_SIZE_MB")  # 10 МБ по умолчанию
+    telegram_data_ttl_seconds: int = Field(300, env="TELEGRAM_DATA_TTL_SECONDS")  # 5 минут по умолчанию
+    catalog_cache_ttl_seconds: int = Field(600, env="CATALOG_CACHE_TTL_SECONDS")  # 10 минут по умолчанию
+    broadcast_batch_size: int = Field(25, env="BROADCAST_BATCH_SIZE")  # 25 по умолчанию
+    broadcast_concurrency: int = Field(10, env="BROADCAST_CONCURRENCY")  # 10 по умолчанию
+    environment: str = Field("development", env="ENVIRONMENT")  # development/production
     public_url: str | None = Field(
         None, env="PUBLIC_URL"
     )  # Публичный URL для webhook (например, https://your-domain.com)
@@ -115,14 +109,14 @@ class Settings(BaseSettings):
         return []
     
     @model_validator(mode="after")
-    def load_admin_ids_from_env(self):
-        """Загружает ADMIN_IDS из переменных окружения, если не было загружено автоматически."""
+    def load_env_variables(self):
+        """Загружает переменные окружения, если они не были загружены автоматически."""
+        # Загружаем ADMIN_IDS
         if not self.admin_ids:
             env_value = os.getenv("ADMIN_IDS")
             if env_value:
                 str_value = env_value.strip()
                 if str_value:
-                    # Разбиваем по запятой и обрабатываем каждый элемент
                     ids = []
                     for v in str_value.split(","):
                         v = v.strip()
@@ -130,10 +124,27 @@ class Settings(BaseSettings):
                             try:
                                 ids.append(int(v))
                             except ValueError:
-                                # Пропускаем некорректное значение
                                 pass
                     if ids:
                         self.admin_ids = ids
+        
+        # Загружаем критические строковые переменные, если они не загрузились
+        # (BaseSettings должен загружать их автоматически, но для надежности проверяем)
+        if not self.mongo_uri or self.mongo_uri == "mongodb://localhost:27017":
+            env_value = os.getenv("MONGO_URI")
+            if env_value:
+                self.mongo_uri = env_value.strip()
+        
+        if not self.redis_url or self.redis_url == "redis://localhost:6379/0":
+            env_value = os.getenv("REDIS_URL")
+            if env_value:
+                self.redis_url = env_value.strip()
+        
+        if not self.telegram_bot_token:
+            env_value = os.getenv("TELEGRAM_BOT_TOKEN")
+            if env_value:
+                self.telegram_bot_token = env_value.strip()
+        
         return self
 
     @field_validator("upload_dir", mode="before")
@@ -143,44 +154,6 @@ class Settings(BaseSettings):
         if isinstance(value, Path):
             return value
         return Path(value)
-
-    @field_validator("dev_allowed_user_ids", mode="before")
-    @classmethod
-    def split_dev_allowed_user_ids(cls, value):
-        """Валидатор для обработки dev_allowed_user_ids из env переменной."""
-        # Обрабатываем None и пустые значения
-        if value is None:
-            return []
-        # Если это уже список, возвращаем как есть
-        if isinstance(value, list):
-            return [int(v) for v in value if v is not None]
-        # Обрабатываем строку
-        if isinstance(value, str):
-            str_value = value.strip()
-            if not str_value:
-                return []
-            # Пытаемся разобрать как JSON
-            try:
-                import json
-
-                parsed = json.loads(str_value)
-                if isinstance(parsed, list):
-                    return [int(v) for v in parsed if v is not None]
-            except (json.JSONDecodeError, ValueError, TypeError):
-                # Если не JSON, разбираем как строку с запятыми
-                pass
-            # Разбиваем по запятой
-            ids = []
-            for v in str_value.split(","):
-                v = v.strip()
-                if v:
-                    try:
-                        ids.append(int(v))
-                    except ValueError:
-                        # Пропускаем некорректное значение
-                        pass
-            return ids
-        return []
 
     model_config = SettingsConfigDict(
         env_file=str(ENV_PATH) if ENV_PATH.exists() else None,
@@ -271,6 +244,13 @@ def get_settings() -> Settings:
             logger.info(f"✅ ADMIN_IDS загружен из {source}: {settings.admin_ids}")
             logger.info(f"✅ ADMIN_IDS set (для быстрой проверки): {settings.admin_ids_set}")
         logger.info(f"✅ ADMIN_IDS загружен: {len(settings.admin_ids)} администратор(ов)")
+    
+    # Проверяем другие критические переменные (только в development)
+    if not is_production:
+        if not settings.mongo_uri or settings.mongo_uri == "mongodb://localhost:27017":
+            logger.warning("⚠️ MONGO_URI использует значение по умолчанию")
+        if not settings.redis_url or settings.redis_url == "redis://localhost:6379/0":
+            logger.warning("⚠️ REDIS_URL использует значение по умолчанию")
     
     return settings
 
