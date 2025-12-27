@@ -292,7 +292,8 @@ def compress_image_bytes(
     max_width: int = 1920,
     max_height: int = 1920,
     quality: int = 85,
-    format: str = "JPEG"
+    format: str = "JPEG",
+    min_size_to_compress: int = 100 * 1024  # 100 КБ - минимальный размер для сжатия
 ) -> bytes:
     """
     Сжимает изображение из бинарных данных.
@@ -303,13 +304,21 @@ def compress_image_bytes(
         max_height: Максимальная высота (по умолчанию 1920px)
         quality: Качество JPEG (1-100, по умолчанию 85)
         format: Формат выходного изображения (JPEG, PNG, WEBP)
+        min_size_to_compress: Минимальный размер файла для сжатия (по умолчанию 100 КБ)
         
     Returns:
         Сжатые бинарные данные изображения
     """
+    # Если файл уже маленький, пропускаем сжатие для ускорения
+    if len(image_bytes) < min_size_to_compress:
+        return image_bytes
+    
     try:
         # Открываем изображение из байтов
         img = Image.open(io.BytesIO(image_bytes))
+        
+        # Если изображение уже маленькое по размерам, пропускаем изменение размера
+        needs_resize = img.width > max_width or img.height > max_height
         
         # Конвертируем RGBA в RGB для JPEG (если нужно)
         if format == "JPEG" and img.mode in ("RGBA", "LA", "P"):
@@ -323,7 +332,7 @@ def compress_image_bytes(
             img = img.convert("RGB")
         
         # Изменяем размер, если изображение слишком большое
-        if img.width > max_width or img.height > max_height:
+        if needs_resize:
             img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
         
         # Сохраняем в буфер
@@ -340,6 +349,11 @@ def compress_image_bytes(
         
         compressed_bytes = output.getvalue()
         output.close()
+        
+        # Если сжатие не дало результата (файл стал больше), возвращаем оригинал
+        if len(compressed_bytes) >= len(image_bytes):
+            logger.debug(f"Сжатие не уменьшило размер изображения, возвращаем оригинал")
+            return image_bytes
         
         # Логируем результат сжатия
         original_size = len(image_bytes)
@@ -361,7 +375,8 @@ def compress_base64_image(
     base64_string: str,
     max_width: int = 1920,
     max_height: int = 1920,
-    quality: int = 85
+    quality: int = 85,
+    min_size_to_compress: int = 100 * 1024  # 100 КБ - минимальный размер для сжатия
 ) -> Optional[str]:
     """
     Сжимает изображение из base64 строки и возвращает сжатую base64 строку.
@@ -371,6 +386,7 @@ def compress_base64_image(
         max_width: Максимальная ширина (по умолчанию 1920px)
         max_height: Максимальная высота (по умолчанию 1920px)
         quality: Качество JPEG (1-100, по умолчанию 85)
+        min_size_to_compress: Минимальный размер файла для сжатия (по умолчанию 100 КБ)
         
     Returns:
         Сжатая base64 строка с data URL префиксом или None в случае ошибки
@@ -398,14 +414,23 @@ def compress_base64_image(
         # Декодируем base64
         image_bytes = base64.b64decode(data)
         
+        # Если файл уже маленький, возвращаем оригинал без сжатия
+        if len(image_bytes) < min_size_to_compress:
+            return base64_string
+        
         # Сжимаем изображение
         compressed_bytes = compress_image_bytes(
             image_bytes,
             max_width=max_width,
             max_height=max_height,
             quality=quality,
-            format=format
+            format=format,
+            min_size_to_compress=min_size_to_compress
         )
+        
+        # Если сжатие не дало результата, возвращаем оригинал
+        if len(compressed_bytes) >= len(image_bytes):
+            return base64_string
         
         # Кодируем обратно в base64
         compressed_base64 = base64.b64encode(compressed_bytes).decode("utf-8")
@@ -415,5 +440,47 @@ def compress_base64_image(
         return f"data:{mime_type};base64,{compressed_base64}"
     except Exception as e:
         logger.error(f"Ошибка при сжатии base64 изображения: {e}")
+        # В случае ошибки возвращаем оригинальную строку
+        return base64_string
+
+
+async def compress_base64_image_async(
+    base64_string: str,
+    max_width: int = 1920,
+    max_height: int = 1920,
+    quality: int = 85
+) -> Optional[str]:
+    """
+    Асинхронно сжимает изображение из base64 строки.
+    Выполняет сжатие в executor, чтобы не блокировать event loop.
+    
+    Args:
+        base64_string: Base64 строка изображения (может содержать data URL префикс)
+        max_width: Максимальная ширина (по умолчанию 1920px)
+        max_height: Максимальная высота (по умолчанию 1920px)
+        quality: Качество JPEG (1-100, по умолчанию 85)
+        
+    Returns:
+        Сжатая base64 строка с data URL префиксом или None в случае ошибки
+    """
+    if not base64_string:
+        return None
+    
+    import asyncio
+    
+    loop = asyncio.get_event_loop()
+    try:
+        # Выполняем сжатие в executor, чтобы не блокировать event loop
+        result = await loop.run_in_executor(
+            None,
+            compress_base64_image,
+            base64_string,
+            max_width,
+            max_height,
+            quality
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Ошибка при асинхронном сжатии base64 изображения: {e}")
         # В случае ошибки возвращаем оригинальную строку
         return base64_string

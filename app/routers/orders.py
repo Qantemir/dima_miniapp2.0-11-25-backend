@@ -85,9 +85,18 @@ async def _save_payment_receipt(db: AsyncIOMotorDatabase, file: UploadFile) -> t
         else:
             format = "JPEG"  # По умолчанию
         
-        # Сжимаем изображение
+        # Сжимаем изображение асинхронно в executor
         try:
-            file_bytes = compress_image_bytes(file_bytes, max_width=1920, max_height=1920, quality=85, format=format)
+            loop = asyncio.get_event_loop()
+            file_bytes = await loop.run_in_executor(
+                None,
+                compress_image_bytes,
+                file_bytes,
+                1920,  # max_width
+                1920,  # max_height
+                85,    # quality
+                format
+            )
         except Exception as e:
             # В случае ошибки сжатия продолжаем с оригинальным файлом
             logger.warning(f"Не удалось сжать изображение чека: {e}")
