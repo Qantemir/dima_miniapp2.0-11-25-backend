@@ -3,7 +3,7 @@
 import base64
 import io
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from bson import ObjectId
 from gridfs import GridFS
