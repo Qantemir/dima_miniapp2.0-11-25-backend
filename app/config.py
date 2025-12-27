@@ -171,8 +171,55 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Получить настройки приложения."""
+    import logging
+    import os
+    
     settings = Settings()
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Логируем загрузку ADMIN_IDS для диагностики
+    logger = logging.getLogger(__name__)
+    
+    # Проверяем, откуда загружается переменная
+    admin_ids_from_env = os.getenv("ADMIN_IDS")
+    admin_ids_from_file = None
+    if ENV_PATH.exists():
+        try:
+            with open(ENV_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().startswith("ADMIN_IDS="):
+                        admin_ids_from_file = line.split("=", 1)[1].strip()
+                        break
+        except Exception:
+            pass
+    
+    # Логируем информацию о ADMIN_IDS (более подробно в development)
+    is_production = settings.environment == "production"
+    
+    if not settings.admin_ids:
+        logger.error(
+            "❌ ADMIN_IDS не настроен или пуст! "
+            "Автоматический редирект для админов не будет работать на фронтенде."
+        )
+        if not is_production:
+            logger.warning(
+                f"   Проверьте переменную окружения ADMIN_IDS в Railway или .env файле: {ENV_PATH}"
+            )
+            if admin_ids_from_env:
+                logger.warning(f"   ADMIN_IDS из переменных окружения: {admin_ids_from_env}")
+            elif admin_ids_from_file:
+                logger.warning(f"   ADMIN_IDS из .env файла: {admin_ids_from_file}")
+            else:
+                logger.warning("   ADMIN_IDS не найден ни в переменных окружения, ни в .env файле")
+        logger.error("   Установите: ADMIN_IDS=123456789,987654321")
+    else:
+        if not is_production:
+            source = "переменные окружения" if admin_ids_from_env else (".env файл" if admin_ids_from_file else "неизвестно")
+            logger.info(f"✅ ADMIN_IDS загружен из {source}: {settings.admin_ids}")
+            logger.info(f"✅ ADMIN_IDS set (для быстрой проверки): {settings.admin_ids_set}")
+        else:
+            logger.info(f"✅ ADMIN_IDS загружен: {len(settings.admin_ids)} администратор(ов)")
+    
     return settings
 
 

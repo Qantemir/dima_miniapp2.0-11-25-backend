@@ -346,6 +346,19 @@ async def startup():
         pymongo_logger = logging.getLogger("pymongo")
         pymongo_logger.setLevel(logging.WARNING)  # Только предупреждения и ошибки
 
+    # Логируем информацию о конфигурации при старте
+    logger = logging.getLogger(__name__)
+    logger.info("🚀 Запуск приложения...")
+    logger.info(f"📦 Environment: {settings.environment}")
+    logger.info(f"🔐 ADMIN_IDS: {settings.admin_ids if settings.admin_ids else 'НЕ НАСТРОЕН!'}")
+    if settings.admin_ids:
+        logger.info(f"🔐 ADMIN_IDS set: {settings.admin_ids_set}")
+    else:
+        logger.warning(
+            "⚠️ ADMIN_IDS не настроен! "
+            "Установите переменную окружения ADMIN_IDS=123456789,987654321 в Railway"
+        )
+
     # Подключаемся к MongoDB при старте для быстрого первого запроса
     await connect_to_mongo()
 
