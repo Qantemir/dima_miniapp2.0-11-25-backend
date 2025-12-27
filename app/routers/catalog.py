@@ -509,7 +509,11 @@ async def get_admin_category_detail(
     _admin_id: int = Depends(verify_admin),
 ):
     """Возвращает детали категории для админки."""
-    category_doc = await db.categories.find_one({"_id": {"$in": _build_id_candidates(category_id)}})
+    # Используем проекцию для минимизации данных
+    category_doc = await db.categories.find_one(
+        {"_id": {"$in": _build_id_candidates(category_id)}},
+        {"name": 1, "_id": 1}
+    )
     if not category_doc:
         raise HTTPException(status_code=404, detail="Категория не найдена")
 
@@ -517,7 +521,21 @@ async def get_admin_category_detail(
     if category_doc.get("_id"):
         candidate_values.add(str(category_doc["_id"]))
 
-    products_cursor = db.products.find({"category_id": {"$in": list(candidate_values)}})
+    # Используем проекцию для минимизации загружаемых данных
+    products_cursor = db.products.find(
+        {"category_id": {"$in": list(candidate_values)}},
+        {
+            "name": 1,
+            "description": 1,
+            "price": 1,
+            "image": 1,
+            "images": 1,
+            "category_id": 1,
+            "available": 1,
+            "variants": 1,
+            "_id": 1,
+        }
+    )
     products_docs = await products_cursor.to_list(length=None)
 
     serialized_category = serialize_doc(category_doc)
@@ -526,7 +544,9 @@ async def get_admin_category_detail(
     products_models = []
     for doc in products_docs:
         try:
-            products_models.append(Product(**serialize_doc(doc) | {"id": str(doc["_id"])}))
+            serialized = serialize_doc(doc)
+            serialized.pop("_id", None)  # Удаляем _id, так как используем id
+            products_models.append(Product(**serialized | {"id": str(doc["_id"])}))
         except Exception:
             continue
 
@@ -556,20 +576,27 @@ async def create_category(
     if not payload.name or not payload.name.strip():
         raise HTTPException(status_code=400, detail="Название категории не может быть пустым")
 
-    existing = await db.categories.find_one({"name": payload.name.strip()})
+    # Проверяем существование с проекцией для минимизации данных
+    existing = await db.categories.find_one({"name": payload.name.strip()}, {"_id": 1})
     if existing:
         raise HTTPException(status_code=400, detail="Категория уже существует")
 
     category_data = {"name": payload.name.strip()}
     result = await db.categories.insert_one(category_data)
-    doc = await db.categories.find_one({"_id": result.inserted_id})
+    # Используем проекцию для минимизации данных
+    doc = await db.categories.find_one({"_id": result.inserted_id}, {"name": 1, "_id": 1})
     if not doc:
         raise HTTPException(status_code=500, detail="Ошибка при создании категории")
-    await invalidate_catalog_cache(db)
-    await _refresh_catalog_cache(db)
+    
+    # Инвалидируем кэш параллельно с подготовкой ответа
+    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
     serialized = serialize_doc(doc)
     serialized.pop("_id", None)  # Удаляем _id, так как используем id
-    return Category(**serialized | {"id": str(doc["_id"])})
+    category = Category(**serialized | {"id": str(doc["_id"])})
+    # Ждем инвалидации кэша и обновляем его в фоне
+    await cache_task
+    asyncio.create_task(_refresh_catalog_cache(db))
+    return category
 
 
 @router.patch("/admin/category/{category_id}", response_model=Category)
@@ -593,27 +620,36 @@ async def update_category(
         if not update_data["name"]:
             raise HTTPException(status_code=400, detail="Название категории не может быть пустым")
 
+        # Проверяем существование с проекцией для минимизации данных
         existing = await db.categories.find_one(
             {
                 "name": update_data["name"],
                 "_id": {"$ne": category_doc["_id"]},
-            }
+            },
+            {"_id": 1}
         )
         if existing:
             raise HTTPException(status_code=400, detail="Категория с таким названием уже существует")
 
+    # Используем проекцию для минимизации данных
     result = await db.categories.find_one_and_update(
         {"_id": category_doc["_id"]},
         {"$set": update_data},
         return_document=ReturnDocument.AFTER,
+        projection={"name": 1, "_id": 1}
     )
     if not result:
         raise HTTPException(status_code=404, detail="Категория не найдена")
-    await invalidate_catalog_cache(db)
-    await _refresh_catalog_cache(db)
+    
+    # Инвалидируем кэш параллельно с подготовкой ответа
+    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
     serialized = serialize_doc(result)
     serialized.pop("_id", None)  # Удаляем _id, так как используем id
-    return Category(**serialized | {"id": str(result["_id"])})
+    category = Category(**serialized | {"id": str(result["_id"])})
+    # Ждем инвалидации кэша и обновляем его в фоне
+    await cache_task
+    asyncio.create_task(_refresh_catalog_cache(db))
+    return category
 
 
 @router.delete(
@@ -643,8 +679,11 @@ async def delete_category(
     if delete_result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Категория не найдена")
 
-    await invalidate_catalog_cache(db)
-    await _refresh_catalog_cache(db)
+    # Инвалидируем кэш параллельно с подготовкой ответа
+    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
+    # Ждем инвалидации кэша и обновляем его в фоне
+    await cache_task
+    asyncio.create_task(_refresh_catalog_cache(db))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -659,17 +698,36 @@ async def create_product(
     _admin_id: int = Depends(verify_admin),
 ):
     """Создает новый товар."""
-    category = await db.categories.find_one({"_id": as_object_id(payload.category_id)})
+    # Проверяем категорию с проекцией для минимизации данных
+    category = await db.categories.find_one({"_id": as_object_id(payload.category_id)}, {"_id": 1})
     if not category:
         raise HTTPException(status_code=400, detail="Категория не найдена")
     data = payload.dict()
-    if data.get("images"):
-        data["image"] = data["images"][0]
     result = await db.products.insert_one(data)
-    doc = await db.products.find_one({"_id": result.inserted_id})
-    await invalidate_catalog_cache(db)
-    await _refresh_catalog_cache(db)
-    return Product(**serialize_doc(doc) | {"id": str(doc["_id"])})
+    # Используем проекцию для минимизации загружаемых данных
+    doc = await db.products.find_one(
+        {"_id": result.inserted_id},
+        {
+            "name": 1,
+            "description": 1,
+            "price": 1,
+            "image": 1,
+            "images": 1,
+            "category_id": 1,
+            "available": 1,
+            "variants": 1,
+            "_id": 1,
+        }
+    )
+    # Инвалидируем кэш параллельно с подготовкой ответа
+    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
+    serialized = serialize_doc(doc)
+    serialized.pop("_id", None)  # Удаляем _id, так как используем id
+    product = Product(**serialized | {"id": str(doc["_id"])})
+    # Ждем инвалидации кэша и обновляем его в фоне
+    await cache_task
+    asyncio.create_task(_refresh_catalog_cache(db))
+    return product
 
 
 @router.patch("/admin/product/{product_id}", response_model=Product)
@@ -681,22 +739,46 @@ async def update_product(
 ):
     """Обновляет товар."""
     update_payload = payload.dict(exclude_unset=True)
+    product_oid = as_object_id(product_id)
+    
+    # Если меняется категория, проверяем её существование с проекцией
     if "category_id" in update_payload:
-        category = await db.categories.find_one({"_id": as_object_id(update_payload["category_id"])})
+        category = await db.categories.find_one(
+            {"_id": as_object_id(update_payload["category_id"])},
+            {"_id": 1}  # Только ID для проверки существования
+        )
         if not category:
             raise HTTPException(status_code=400, detail="Категория не найдена")
-    if "images" in update_payload and update_payload["images"]:
-        update_payload["image"] = update_payload["images"][0]
+    
+    # Обновляем с проекцией для минимизации данных
     doc = await db.products.find_one_and_update(
-        {"_id": as_object_id(product_id)},
+        {"_id": product_oid},
         {"$set": update_payload},
         return_document=True,
+        projection={
+            "name": 1,
+            "description": 1,
+            "price": 1,
+            "image": 1,
+            "images": 1,
+            "category_id": 1,
+            "available": 1,
+            "variants": 1,
+            "_id": 1,
+        }
     )
     if not doc:
         raise HTTPException(status_code=404, detail="Товар не найден")
-    await invalidate_catalog_cache(db)
-    await _refresh_catalog_cache(db)
-    return Product(**serialize_doc(doc) | {"id": str(doc["_id"])})
+    
+    # Инвалидируем кэш параллельно с подготовкой ответа
+    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
+    serialized = serialize_doc(doc)
+    serialized.pop("_id", None)  # Удаляем _id, так как используем id
+    product = Product(**serialized | {"id": str(doc["_id"])})
+    # Ждем инвалидации кэша и обновляем его в фоне
+    await cache_task
+    asyncio.create_task(_refresh_catalog_cache(db))
+    return product
 
 
 @router.delete(
@@ -712,6 +794,9 @@ async def delete_product(
     result = await db.products.delete_one({"_id": as_object_id(product_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Товар не найден")
-    await invalidate_catalog_cache(db)
-    await _refresh_catalog_cache(db)
-    return {"status": "ok"}
+    # Инвалидируем кэш параллельно с подготовкой ответа
+    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
+    # Ждем инвалидации кэша и обновляем его в фоне
+    await cache_task
+    asyncio.create_task(_refresh_catalog_cache(db))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
