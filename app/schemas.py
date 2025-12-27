@@ -287,10 +287,29 @@ class StoreSleepRequest(BaseModel):
 # PaymentLinkRequest удален, т.к. payment_link больше не используется
 
 
+class OrderSummary(BaseModel):
+    """Упрощенная модель заказа для списка (без полных items и лишних полей)."""
+
+    id: PyObjectId = Field(default_factory=PyObjectId, alias="id")
+    customer_name: str
+    customer_phone: str
+    delivery_address: str
+    status: OrderStatus = OrderStatus.ACCEPTED
+    total_amount: float
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    items_count: int = Field(..., description="Количество товаров в заказе")
+
+    class Config:
+        """Конфигурация Pydantic."""
+
+        populate_by_name = True
+        extra = "allow"
+
+
 class PaginatedOrdersResponse(BaseModel):
     """PaginatedOrdersResponse модель."""
 
-    orders: List[Order]
+    orders: List[OrderSummary]
     next_cursor: Optional[str] = None
 
 

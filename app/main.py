@@ -348,24 +348,6 @@ async def startup():
 
     # Логируем информацию о конфигурации при старте
     logger = logging.getLogger(__name__)
-    logger.info("🚀 Запуск приложения...")
-    logger.info(f"📦 Environment: {settings.environment}")
-    
-    # Детальная диагностика переменных окружения (только в development)
-    if settings.environment != "production":
-        import os
-        admin_env_vars = {k: v for k, v in os.environ.items() if "ADMIN" in k.upper()}
-        if admin_env_vars:
-            logger.info(f"🔍 Найдены переменные окружения с ADMIN: {list(admin_env_vars.keys())}")
-        else:
-            logger.warning("🔍 Переменные окружения с ADMIN не найдены в os.environ")
-        logger.debug(f"🔍 ADMIN_IDS из os.getenv: {repr(os.getenv('ADMIN_IDS'))}")
-    
-    # Информация о ADMIN_IDS уже логируется в config.py при загрузке настроек
-    if settings.admin_ids:
-        logger.info(f"🔐 ADMIN_IDS: {len(settings.admin_ids)} администратор(ов) настроено")
-    else:
-        logger.warning("⚠️ ADMIN_IDS не настроен - админ-панель будет недоступна")
 
     # Подключаемся к MongoDB при старте для быстрого первого запроса
     await connect_to_mongo()

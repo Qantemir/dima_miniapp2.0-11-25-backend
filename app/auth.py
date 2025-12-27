@@ -27,11 +27,6 @@ async def verify_admin(current_user: TelegramUser = Depends(get_current_user)) -
     # Оптимизированная проверка (используем кэшированный set)
     if user_id in settings.admin_ids_set:
         return current_user.id
-
-    logger.warning(
-        f"⚠️ Пользователь {user_id} попытался получить доступ к админ-панели, "
-        f"но его ID не в списке администраторов. ADMIN_IDS: {settings.admin_ids}"
-    )
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="Доступ запрещён. Требуются права администратора.",

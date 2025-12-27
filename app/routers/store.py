@@ -250,7 +250,7 @@ async def toggle_store_sleep(
     normalized_doc = _normalize_store_status_doc(updated)
     status_model = StoreStatus(**normalized_doc)
     _invalidate_cache()  # Инвалидируем кеш после изменения
-    await store_status_broadcaster.broadcast(_serialize_store_status(status_model))
+    # Broadcaster removed - frontend uses polling instead of SSE
     return status_model
 
 

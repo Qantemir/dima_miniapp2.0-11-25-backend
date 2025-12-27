@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     max_receipt_size_mb: int = Field(10, env="MAX_RECEIPT_SIZE_MB")  # 10 МБ по умолчанию
     telegram_data_ttl_seconds: int = Field(300, env="TELEGRAM_DATA_TTL_SECONDS")  # 5 минут по умолчанию
     catalog_cache_ttl_seconds: int = Field(600, env="CATALOG_CACHE_TTL_SECONDS")  # 10 минут по умолчанию
-    broadcast_batch_size: int = Field(25, env="BROADCAST_BATCH_SIZE")  # 25 по умолчанию
-    broadcast_concurrency: int = Field(10, env="BROADCAST_CONCURRENCY")  # 10 по умолчанию
+    broadcast_batch_size: int = Field(50, env="BROADCAST_BATCH_SIZE")  # 50 по умолчанию (оптимизировано для продакшена)
+    broadcast_concurrency: int = Field(25, env="BROADCAST_CONCURRENCY")  # 25 по умолчанию (близко к лимиту Telegram 30/сек)
     environment: str = Field("development", env="ENVIRONMENT")  # development/production
     public_url: str | None = Field(
         None, env="PUBLIC_URL"
@@ -179,10 +179,6 @@ def get_settings() -> Settings:
     admin_ids_from_file = None
     
     # Проверяем все возможные источники
-    logger.debug(f"🔍 Диагностика ADMIN_IDS:")
-    logger.debug(f"   ENV_PATH: {ENV_PATH} (существует: {ENV_PATH.exists()})")
-    logger.debug(f"   os.getenv('ADMIN_IDS'): {repr(admin_ids_from_env)}")
-    
     # Проверяем .env файл
     if ENV_PATH.exists():
         try:
@@ -190,10 +186,9 @@ def get_settings() -> Settings:
                 for line in f:
                     if line.strip().startswith("ADMIN_IDS="):
                         admin_ids_from_file = line.split("=", 1)[1].strip()
-                        logger.debug(f"   ADMIN_IDS из .env файла: {repr(admin_ids_from_file)}")
                         break
         except Exception as e:
-            logger.debug(f"   Ошибка чтения .env файла: {e}")
+            pass
     
     # Создаем Settings - model_validator автоматически загрузит ADMIN_IDS из os.environ, если нужно
     try:
@@ -204,9 +199,7 @@ def get_settings() -> Settings:
     
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     
-    # Логируем информацию о ADMIN_IDS (более подробно в development)
-    is_production = settings.environment == "production"
-    
+    # Логируем информацию о ADMIN_IDS
     if not settings.admin_ids:
         logger.error(
             "❌ ADMIN_IDS не настроен или пуст! "
@@ -214,43 +207,9 @@ def get_settings() -> Settings:
         )
         logger.error("   Установите переменную окружения ADMIN_IDS в Railway для бэкенда!")
         logger.error("   Формат: ADMIN_IDS=123456789,987654321")
-        if not is_production:
-            logger.warning(
-                f"   Проверьте переменную окружения ADMIN_IDS в Railway или .env файле: {ENV_PATH}"
-            )
-            if admin_ids_from_env:
-                logger.warning(f"   ADMIN_IDS из переменных окружения: {repr(admin_ids_from_env)}")
-                logger.warning(f"   ⚠️ Значение найдено, но не распарсилось! Проверьте формат (должно быть: 123456789,987654321)")
-                logger.warning(f"   Тип значения: {type(admin_ids_from_env)}, длина: {len(admin_ids_from_env) if admin_ids_from_env else 0}")
-            elif admin_ids_from_file:
-                logger.warning(f"   ADMIN_IDS из .env файла: {repr(admin_ids_from_file)}")
-                logger.warning(f"   ⚠️ Значение найдено в файле, но не распарсилось! Проверьте формат (должно быть: 123456789,987654321)")
-            else:
-                logger.warning("   ADMIN_IDS не найден ни в переменных окружения, ни в .env файле")
-                logger.warning("   💡 В Railway: Settings → Variables → Add Variable → ADMIN_IDS=123456789,987654321")
-                # Показываем все переменные окружения, начинающиеся с ADMIN для диагностики
-                admin_vars = {k: v for k, v in os.environ.items() if 'ADMIN' in k.upper()}
-                if admin_vars:
-                    logger.warning(f"   Найдены похожие переменные: {admin_vars}")
-        else:
-            # В production показываем более краткую информацию
-            logger.error("   💡 Перейдите в Railway → Settings → Variables → Add Variable")
-            logger.error("   💡 Имя: ADMIN_IDS")
-            logger.error("   💡 Значение: 123456789,987654321 (замените на ваши реальные ID)")
-    else:
-        # Всегда показываем успешную загрузку
-        if not is_production:
-            source = "переменные окружения" if admin_ids_from_env else (".env файл" if admin_ids_from_file else "неизвестно")
-            logger.info(f"✅ ADMIN_IDS загружен из {source}: {settings.admin_ids}")
-            logger.info(f"✅ ADMIN_IDS set (для быстрой проверки): {settings.admin_ids_set}")
-        logger.info(f"✅ ADMIN_IDS загружен: {len(settings.admin_ids)} администратор(ов)")
-    
-    # Проверяем другие критические переменные (только в development)
-    if not is_production:
-        if not settings.mongo_uri or settings.mongo_uri == "mongodb://localhost:27017":
-            logger.warning("⚠️ MONGO_URI использует значение по умолчанию")
-        if not settings.redis_url or settings.redis_url == "redis://localhost:6379/0":
-            logger.warning("⚠️ REDIS_URL использует значение по умолчанию")
+        logger.error("   💡 Перейдите в Railway → Settings → Variables → Add Variable")
+        logger.error("   💡 Имя: ADMIN_IDS")
+        logger.error("   💡 Значение: 123456789,987654321 (замените на ваши реальные ID)")
     
     return settings
 

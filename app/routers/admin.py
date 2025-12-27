@@ -19,6 +19,7 @@ from ..schemas import (
     BroadcastResponse,
     Order,
     OrderStatus,
+    OrderSummary,
     PaginatedOrdersResponse,
     UpdateStatusRequest,
 )
@@ -56,20 +57,38 @@ async def list_orders(
         except ValueError:
             raise HTTPException(status_code=400, detail="Некорректный cursor")
 
+    # Проекция: получаем только нужные поля для списка (без items, comment, receipt и т.д.)
+    projection = {
+        "_id": 1,
+        "customer_name": 1,
+        "customer_phone": 1,
+        "delivery_address": 1,
+        "status": 1,
+        "total_amount": 1,
+        "created_at": 1,
+        "items": 1,  # Нужен только для подсчета длины, не передаем в ответ
+    }
+
     # Используем индекс для быстрой сортировки
+    # Убираем hint - MongoDB сам выберет оптимальный индекс
     docs = await (
-        db.orders.find(query)
+        db.orders.find(query, projection)
         .sort("_id", -1)
-        .hint([("status", 1), ("created_at", -1)])
         .limit(limit + 1)
         .to_list(length=limit + 1)
     )
 
-    # Оптимизированная валидация заказов
+    # Оптимизированная валидация заказов - создаем OrderSummary напрямую
     orders = []
     for doc in docs:
         try:
-            orders.append(Order(**serialize_doc(doc) | {"id": str(doc["_id"])}))
+            # Подсчитываем количество товаров из items массива
+            items_count = len(doc.get("items", []))
+            # Создаем упрощенный объект без полной валидации Order
+            order_data = serialize_doc(doc) | {"id": str(doc["_id"]), "items_count": items_count}
+            # Удаляем items из данных, т.к. они не нужны в OrderSummary
+            order_data.pop("items", None)
+            orders.append(OrderSummary(**order_data))
         except Exception:
             continue
 
@@ -310,19 +329,29 @@ async def send_broadcast(
     db: AsyncIOMotorDatabase = Depends(get_db),
     _admin_id: int = Depends(verify_admin),
 ):
-    """Send broadcast message to all users."""
+    """Send broadcast message to all users with production-ready error handling and rate limiting."""
+    import logging
+    import time
+    
+    logger = logging.getLogger(__name__)
     settings = get_settings()
     if not settings.telegram_bot_token:
         raise HTTPException(status_code=500, detail="TELEGRAM_BOT_TOKEN не настроен. Добавьте токен бота в .env файл.")
 
-    batch_size = max(1, settings.broadcast_batch_size)
-    concurrency = max(1, settings.broadcast_concurrency)
-    customers_cursor = db.customers.find({}, {"telegram_id": 1})
-
-    # Формируем текст сообщения (без Markdown, чтобы избежать ошибок парсинга)
+    # Валидация размера сообщения (Telegram лимит: 4096 символов)
     message_text = f"{payload.title}\n\n{payload.message}"
     if payload.link:
         message_text += f"\n\n🔗 {payload.link}"
+    
+    if len(message_text) > 4096:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Сообщение слишком длинное ({len(message_text)} символов). Максимум 4096 символов."
+        )
+
+    batch_size = max(1, settings.broadcast_batch_size)
+    concurrency = max(1, min(settings.broadcast_concurrency, 30))  # Telegram лимит: 30 сообщений/сек
+    customers_cursor = db.customers.find({}, {"telegram_id": 1})
 
     # Отправляем сообщения через Telegram Bot API
     bot_api_url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
@@ -330,67 +359,168 @@ async def send_broadcast(
     failed_count = 0
     total_count = 0
     invalid_user_ids: list[int] = []
+    start_time = time.time()
+    
+    # Rate limiting для Telegram API (30 сообщений в секунду)
+    # Используем sliding window для контроля скорости
+    last_send_times: list[float] = []
 
-    async def send_to_customer(
+    async def send_to_customer_with_retry(
         client: httpx.AsyncClient,
         telegram_id: int,
+        max_retries: int = 3,
     ) -> tuple[bool, bool]:
-        try:
-            response = await client.post(
-                bot_api_url,
-                json={
-                    "chat_id": telegram_id,
-                    "text": message_text,
-                },
-            )
-            payload = response.json()
-            if payload.get("ok"):
-                return True, False
-            error_code = payload.get("error_code")
-            description = (payload.get("description") or "").lower()
-            is_invalid = error_code in {400, 403, 404} or any(
-                phrase in description for phrase in ("chat not found", "user not found", "blocked")
-            )
-            return False, is_invalid
-        except httpx.HTTPStatusError as exc:
-            return False, exc.response.status_code in {400, 403, 404}
-        except Exception:
-            return False, False
+        """Отправляет сообщение с retry логикой и обработкой rate limits."""
+        for attempt in range(max_retries):
+            try:
+                # Rate limiting: ждем если нужно
+                now = time.time()
+                if last_send_times:
+                    # Удаляем старые записи (старше 1 секунды)
+                    last_send_times[:] = [t for t in last_send_times if now - t < 1.0]
+                    
+                    # Если достигли лимита (30 в секунду), ждем
+                    if len(last_send_times) >= 30:
+                        sleep_time = 1.0 - (now - last_send_times[0])
+                        if sleep_time > 0:
+                            await asyncio.sleep(sleep_time)
+                            now = time.time()
+                            last_send_times[:] = [t for t in last_send_times if now - t < 1.0]
+                
+                last_send_times.append(now)
+                
+                response = await client.post(
+                    bot_api_url,
+                    json={
+                        "chat_id": telegram_id,
+                        "text": message_text,
+                    },
+                    timeout=15.0,  # Увеличенный timeout для надежности
+                )
+                result = response.json()
+                
+                if result.get("ok"):
+                    return True, False
+                
+                error_code = result.get("error_code")
+                description = (result.get("description") or "").lower()
+                
+                # Обработка rate limit от Telegram (429)
+                if error_code == 429:
+                    retry_after = result.get("parameters", {}).get("retry_after", 1)
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_after)
+                        continue
+                    return False, False
+                
+                # Временные ошибки сервера (503, 502, 500) - retry
+                if response.status_code in {500, 502, 503} and attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 0.5  # Exponential backoff: 0.5s, 1s, 2s
+                    await asyncio.sleep(wait_time)
+                    continue
+                
+                # Постоянные ошибки (невалидные пользователи)
+                is_invalid = error_code in {400, 403, 404} or any(
+                    phrase in description for phrase in ("chat not found", "user not found", "blocked", "bot blocked")
+                )
+                return False, is_invalid
+                
+            except httpx.TimeoutException:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 0.5
+                    await asyncio.sleep(wait_time)
+                    continue
+                return False, False
+            except httpx.HTTPStatusError as exc:
+                # Временные ошибки сети
+                if exc.response.status_code in {500, 502, 503, 429} and attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 0.5
+                    await asyncio.sleep(wait_time)
+                    continue
+                is_invalid = exc.response.status_code in {400, 403, 404}
+                return False, is_invalid
+            except Exception as e:
+                # Логируем неожиданные ошибки только в production
+                if settings.environment == "production" and attempt == max_retries - 1:
+                    logger.warning(f"Ошибка при отправке сообщения пользователю {telegram_id}: {type(e).__name__}")
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) * 0.5
+                    await asyncio.sleep(wait_time)
+                    continue
+                return False, False
+        
+        return False, False
 
     async def flush_invalids():
         nonlocal failed_count, invalid_user_ids
         if not invalid_user_ids:
             return
-        chunk = invalid_user_ids
-        invalid_user_ids = []
+        chunk = invalid_user_ids.copy()
+        invalid_user_ids.clear()
         failed_count += len(chunk)
-        await db.customers.delete_many({"telegram_id": {"$in": chunk}})
+        try:
+            await db.customers.delete_many({"telegram_id": {"$in": chunk}})
+        except Exception as e:
+            logger.error(f"Ошибка при удалении невалидных пользователей: {e}")
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    # Используем connection pooling для лучшей производительности
+    limits = httpx.Limits(max_keepalive_connections=20, max_connections=100)
+    async with httpx.AsyncClient(timeout=15.0, limits=limits) as client:
+        batch_num = 0
         while True:
             batch = await customers_cursor.to_list(length=batch_size)
             if not batch:
                 break
+            
+            batch_num += 1
             total_count += len(batch)
             telegram_ids = [customer["telegram_id"] for customer in batch]
+
+            # Логируем прогресс каждые 10 батчей
+            if batch_num % 10 == 0:
+                elapsed = time.time() - start_time
+                rate = sent_count / elapsed if elapsed > 0 else 0
+                logger.info(
+                    f"Рассылка: обработано {total_count} пользователей, "
+                    f"отправлено {sent_count}, ошибок {failed_count}, "
+                    f"скорость {rate:.1f} сообщений/сек"
+                )
 
             # Ограничиваем конкуренцию, разбивая на подгруппы
             for i in range(0, len(telegram_ids), concurrency):
                 chunk = telegram_ids[i : i + concurrency]
                 results = await asyncio.gather(
-                    *[send_to_customer(client, telegram_id) for telegram_id in chunk],
-                    return_exceptions=False,
+                    *[send_to_customer_with_retry(client, telegram_id) for telegram_id in chunk],
+                    return_exceptions=True,  # Обрабатываем исключения
                 )
-                for telegram_id, (sent, invalid) in zip(chunk, results):
+                for telegram_id, result in zip(chunk, results):
+                    if isinstance(result, Exception):
+                        logger.warning(f"Исключение при отправке пользователю {telegram_id}: {result}")
+                        failed_count += 1
+                        continue
+                    sent, invalid = result
                     if sent:
                         sent_count += 1
-                    if invalid:
+                    elif invalid:
                         invalid_user_ids.append(telegram_id)
+                    else:
+                        failed_count += 1
 
+            # Периодически очищаем невалидных пользователей
             if len(invalid_user_ids) >= 500:
                 await flush_invalids()
 
+    # Финальная очистка невалидных пользователей
     await flush_invalids()
+
+    elapsed_time = time.time() - start_time
+    rate = sent_count / elapsed_time if elapsed_time > 0 else 0
+
+    # Логируем итоговую статистику
+    logger.info(
+        f"Рассылка завершена: всего {total_count}, отправлено {sent_count}, "
+        f"ошибок {failed_count}, время {elapsed_time:.1f}с, скорость {rate:.1f} сообщений/сек"
+    )
 
     # Сохраняем запись о рассылке с статистикой
     entry = {
@@ -401,6 +531,8 @@ async def send_broadcast(
         "total_count": total_count,
         "sent_count": sent_count,
         "failed_count": failed_count,
+        "duration_seconds": round(elapsed_time, 2),
+        "rate_per_second": round(rate, 2),
         "created_at": datetime.utcnow(),
     }
     await db.broadcasts.insert_one(entry)

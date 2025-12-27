@@ -47,3 +47,4 @@ quick-check:
 	flake8 app/ --config=.flake8 --count --statistics
 	@echo "✅ Быстрая проверка завершена"
 
+
