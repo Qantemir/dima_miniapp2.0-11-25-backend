@@ -81,9 +81,6 @@ docker run -p 8000:8000 --env-file .env backend-api
 
 ### Заказы
 - `POST /api/order` - Создать заказ
-- `GET /api/order/:id` - Получить заказ
-- `GET /api/order/last` - Получить последний заказ
-- `PATCH /api/order/:id/address` - Обновить адрес заказа
 
 ### Админ панель
 - `GET /api/admin/orders` - Список заказов

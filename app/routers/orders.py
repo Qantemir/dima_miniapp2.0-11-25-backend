@@ -12,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from ..config import settings
 from ..database import get_db
 from ..notifications import notify_admins_new_order
-from ..schemas import Cart, Order, OrderStatus, UpdateAddressRequest
+from ..schemas import Cart, Order, OrderStatus
 from ..security import TelegramUser, get_current_user
 from ..utils import as_object_id, ensure_store_is_awake, get_gridfs, serialize_doc
 

@@ -47,11 +47,7 @@ async def list_orders(
     # Оптимизированное построение запроса
     query = {}
     if status_filter:
-        query["status"] = (
-            {"$in": [OrderStatus.PROCESSING.value, OrderStatus.NEW.value]}
-            if status_filter == OrderStatus.PROCESSING
-            else status_filter.value
-        )
+        query["status"] = status_filter.value
     if not include_deleted:
         query["deleted_at"] = {"$exists": False}
     if cursor:
