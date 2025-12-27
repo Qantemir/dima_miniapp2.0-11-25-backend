@@ -265,12 +265,12 @@ def get_settings() -> Settings:
             logger.error("   💡 Имя: ADMIN_IDS")
             logger.error("   💡 Значение: 123456789,987654321 (замените на ваши реальные ID)")
     else:
+        # Всегда показываем успешную загрузку
         if not is_production:
             source = "переменные окружения" if admin_ids_from_env else (".env файл" if admin_ids_from_file else "неизвестно")
             logger.info(f"✅ ADMIN_IDS загружен из {source}: {settings.admin_ids}")
             logger.info(f"✅ ADMIN_IDS set (для быстрой проверки): {settings.admin_ids_set}")
-        else:
-            logger.info(f"✅ ADMIN_IDS загружен: {len(settings.admin_ids)} администратор(ов)")
+        logger.info(f"✅ ADMIN_IDS загружен: {len(settings.admin_ids)} администратор(ов)")
     
     return settings
 
