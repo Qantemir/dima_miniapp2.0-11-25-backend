@@ -19,7 +19,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from .cache import close_redis, get_redis
-from .config import settings
+from .config import settings, ENV_PATH
 from .database import close_mongo_connection, connect_to_mongo, get_db
 from .routers import admin, bot_webhook, cart, catalog, orders, store
 from .schemas import CatalogResponse, StoreStatus
@@ -350,14 +350,20 @@ async def startup():
     logger = logging.getLogger(__name__)
     logger.info("🚀 Запуск приложения...")
     logger.info(f"📦 Environment: {settings.environment}")
-    logger.info(f"🔐 ADMIN_IDS: {settings.admin_ids if settings.admin_ids else 'НЕ НАСТРОЕН!'}")
+    
+    # Детальная диагностика переменных окружения (только в development)
+    if settings.environment != "production":
+        import os
+        admin_env_vars = {k: v for k, v in os.environ.items() if "ADMIN" in k.upper()}
+        if admin_env_vars:
+            logger.info(f"🔍 Найдены переменные окружения с ADMIN: {list(admin_env_vars.keys())}")
+        else:
+            logger.warning("🔍 Переменные окружения с ADMIN не найдены в os.environ")
+        logger.debug(f"🔍 ADMIN_IDS из os.getenv: {repr(os.getenv('ADMIN_IDS'))}")
+    
+    # Информация о ADMIN_IDS уже логируется в config.py при загрузке настроек
     if settings.admin_ids:
-        logger.info(f"🔐 ADMIN_IDS set: {settings.admin_ids_set}")
-    else:
-        logger.warning(
-            "⚠️ ADMIN_IDS не настроен! "
-            "Установите переменную окружения ADMIN_IDS=123456789,987654321 в Railway"
-        )
+        logger.info(f"🔐 ADMIN_IDS: {len(settings.admin_ids)} администратор(ов) настроено")
 
     # Подключаемся к MongoDB при старте для быстрого первого запроса
     await connect_to_mongo()
@@ -445,6 +451,26 @@ async def root():
 async def health():
     """Health check endpoint that doesn't require database."""
     return {"status": "ok", "message": "Server is running"}
+
+
+@app.get("/debug/env")
+async def debug_env():
+    """Debug endpoint to check environment variables (only in development)."""
+    import os
+    
+    if settings.environment == "production":
+        return {"error": "This endpoint is only available in development mode"}
+    
+    # Получаем все переменные окружения, связанные с ADMIN
+    admin_vars = {k: v for k, v in os.environ.items() if "ADMIN" in k.upper()}
+    
+    return {
+        "environment": settings.environment,
+        "admin_ids_from_settings": settings.admin_ids,
+        "admin_ids_from_env": os.getenv("ADMIN_IDS"),
+        "all_admin_env_vars": admin_vars,
+        "env_file_exists": ENV_PATH.exists() if hasattr(settings, "ENV_PATH") else False,
+    }
 
 
 # SPA fallback - отдаем Next.js для всех не-API маршрутов

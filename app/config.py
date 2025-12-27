@@ -5,8 +5,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, List
 
-from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator, ConfigDict, AliasChoices
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 ENV_PATH = ROOT_DIR / ".env"
@@ -19,7 +19,9 @@ class Settings(BaseSettings):
     mongo_db: str = Field("miniapp", env="MONGO_DB")
     redis_url: str = Field("redis://localhost:6379/0", env="REDIS_URL")
     api_prefix: str = "/api"
-    admin_ids: List[int] = Field(default_factory=list, env="ADMIN_IDS")
+    # BaseSettings автоматически загружает переменные окружения по имени поля (case-insensitive)
+    # Но для надежности также проверяем ADMIN_IDS в валидаторе
+    admin_ids: List[int] = Field(default_factory=list)
 
     @property
     def admin_ids_set(self) -> set[int]:
@@ -92,8 +94,14 @@ class Settings(BaseSettings):
     @classmethod
     def split_admin_ids(cls, value):
         """Разбивает строку ADMIN_IDS на список целых чисел."""
+        # Если значение не передано, пытаемся загрузить из переменных окружения
         if value is None:
-            return []
+            env_value = os.getenv("ADMIN_IDS")
+            if env_value:
+                value = env_value
+            else:
+                return []
+        
         if isinstance(value, list):
             return [int(v) for v in value]
         # Обрабатываем строку - убираем пробелы и разбиваем по запятой
@@ -160,12 +168,15 @@ class Settings(BaseSettings):
             return ids
         return []
 
-    class Config:
-        """Конфигурация Pydantic для загрузки из .env файла."""
-
-        env_file = ENV_PATH
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=str(ENV_PATH) if ENV_PATH.exists() else None,
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        env_ignore_empty=False,  # Не игнорируем пустые значения, чтобы видеть, что переменная установлена
+        extra="ignore",
+        # Явно указываем, что нужно загружать из переменных окружения
+        env_prefix="",  # Без префикса
+    )
 
 
 @lru_cache
@@ -174,24 +185,55 @@ def get_settings() -> Settings:
     import logging
     import os
     
-    settings = Settings()
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Логируем загрузку ADMIN_IDS для диагностики
     logger = logging.getLogger(__name__)
     
-    # Проверяем, откуда загружается переменная
+    # Детальная диагностика переменных окружения перед созданием Settings
     admin_ids_from_env = os.getenv("ADMIN_IDS")
     admin_ids_from_file = None
+    
+    # Проверяем все возможные источники
+    logger.debug(f"🔍 Диагностика ADMIN_IDS:")
+    logger.debug(f"   ENV_PATH: {ENV_PATH} (существует: {ENV_PATH.exists()})")
+    logger.debug(f"   os.getenv('ADMIN_IDS'): {repr(admin_ids_from_env)}")
+    
+    # Проверяем .env файл
     if ENV_PATH.exists():
         try:
             with open(ENV_PATH, "r", encoding="utf-8") as f:
                 for line in f:
                     if line.strip().startswith("ADMIN_IDS="):
                         admin_ids_from_file = line.split("=", 1)[1].strip()
+                        logger.debug(f"   ADMIN_IDS из .env файла: {repr(admin_ids_from_file)}")
                         break
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"   Ошибка чтения .env файла: {e}")
+    
+    # Создаем Settings с явной передачей переменных окружения
+    try:
+        # В Pydantic v2 BaseSettings автоматически загружает переменные окружения
+        # Но мы можем явно передать их через _env_file или через model_config
+        settings = Settings()
+        
+        # Дополнительная проверка: пытаемся загрузить ADMIN_IDS напрямую из os.environ
+        # если он не загрузился через Settings
+        if not settings.admin_ids and admin_ids_from_env:
+            logger.warning("⚠️ ADMIN_IDS найден в os.environ, но не загрузился через Settings!")
+            logger.warning(f"   Попытка ручной загрузки из: {repr(admin_ids_from_env)}")
+            # Пытаемся распарсить вручную
+            try:
+                if admin_ids_from_env.strip():
+                    parsed_ids = [int(v.strip()) for v in admin_ids_from_env.split(",") if v.strip()]
+                    if parsed_ids:
+                        logger.warning(f"   Успешно распарсено вручную: {parsed_ids}")
+                        # Обновляем settings (но это не сработает из-за кэширования)
+                        # Вместо этого просто логируем
+            except Exception as parse_error:
+                logger.error(f"   Ошибка при парсинге: {parse_error}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при создании Settings: {e}", exc_info=True)
+        raise
+    
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
     
     # Логируем информацию о ADMIN_IDS (более подробно в development)
     is_production = settings.environment == "production"
@@ -208,14 +250,19 @@ def get_settings() -> Settings:
                 f"   Проверьте переменную окружения ADMIN_IDS в Railway или .env файле: {ENV_PATH}"
             )
             if admin_ids_from_env:
-                logger.warning(f"   ADMIN_IDS из переменных окружения: {admin_ids_from_env}")
+                logger.warning(f"   ADMIN_IDS из переменных окружения: {repr(admin_ids_from_env)}")
                 logger.warning(f"   ⚠️ Значение найдено, но не распарсилось! Проверьте формат (должно быть: 123456789,987654321)")
+                logger.warning(f"   Тип значения: {type(admin_ids_from_env)}, длина: {len(admin_ids_from_env) if admin_ids_from_env else 0}")
             elif admin_ids_from_file:
-                logger.warning(f"   ADMIN_IDS из .env файла: {admin_ids_from_file}")
+                logger.warning(f"   ADMIN_IDS из .env файла: {repr(admin_ids_from_file)}")
                 logger.warning(f"   ⚠️ Значение найдено в файле, но не распарсилось! Проверьте формат (должно быть: 123456789,987654321)")
             else:
                 logger.warning("   ADMIN_IDS не найден ни в переменных окружения, ни в .env файле")
                 logger.warning("   💡 В Railway: Settings → Variables → Add Variable → ADMIN_IDS=123456789,987654321")
+                # Показываем все переменные окружения, начинающиеся с ADMIN для диагностики
+                admin_vars = {k: v for k, v in os.environ.items() if 'ADMIN' in k.upper()}
+                if admin_vars:
+                    logger.warning(f"   Найдены похожие переменные: {admin_vars}")
         else:
             # В production показываем более краткую информацию
             logger.error("   💡 Перейдите в Railway → Settings → Variables → Add Variable")
