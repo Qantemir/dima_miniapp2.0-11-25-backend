@@ -259,7 +259,7 @@ async def fetch_catalog(
 ) -> Tuple[CatalogResponse, str]:
     """Загружает каталог из БД или кэша."""
     global _catalog_cache_available, _catalog_cache_available_etag, _catalog_cache_available_expiration, _catalog_cache_available_version, _catalog_cache_all, _catalog_cache_all_etag, _catalog_cache_all_expiration, _catalog_cache_all_version
-    ttl = settings.catalog_cache_ttl_seconds
+    ttl = 600  # 10 минут
     now = datetime.utcnow()
 
     # Выбираем правильный кеш в зависимости от only_available
@@ -514,9 +514,9 @@ async def get_catalog(
                 else:
                     catalog_bytes = orjson.dumps(catalog_dict).encode("utf-8")
                 # Сохраняем асинхронно без ожидания для максимальной скорости ответа
-                asyncio.create_task(cache_set(cache_key, catalog_bytes, ttl=settings.catalog_cache_ttl_seconds))
+                asyncio.create_task(cache_set(cache_key, catalog_bytes, ttl=600))  # 10 минут
                 asyncio.create_task(
-                    cache_set(f"{cache_key}:etag", etag.encode("utf-8"), ttl=settings.catalog_cache_ttl_seconds)
+                    cache_set(f"{cache_key}:etag", etag.encode("utf-8"), ttl=600)  # 10 минут
                 )
             except Exception:
                 pass  # Игнорируем ошибки сохранения кэша для скорости

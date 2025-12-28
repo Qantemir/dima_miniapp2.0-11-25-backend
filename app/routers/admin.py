@@ -369,8 +369,8 @@ async def send_broadcast(
             detail=f"Сообщение слишком длинное ({len(message_text)} символов). Максимум 4096 символов."
         )
 
-    batch_size = max(1, settings.broadcast_batch_size)
-    concurrency = max(1, min(settings.broadcast_concurrency, 30))  # Telegram лимит: 30 сообщений/сек
+    batch_size = 50  # Размер батча для чтения из БД
+    concurrency = 25  # Параллельные отправки (макс. 30 - лимит Telegram)
     customers_cursor = db.customers.find({}, {"telegram_id": 1})
 
     # Отправляем сообщения через Telegram Bot API
@@ -465,8 +465,8 @@ async def send_broadcast(
                 is_invalid = exc.response.status_code in {400, 403, 404}
                 return False, is_invalid
             except Exception as e:
-                # Логируем неожиданные ошибки только в production
-                if settings.environment == "production" and attempt == max_retries - 1:
+                # Логируем неожиданные ошибки при последней попытке
+                if attempt == max_retries - 1:
                     logger.warning(f"Ошибка при отправке сообщения пользователю {telegram_id}: {type(e).__name__}")
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) * 0.5

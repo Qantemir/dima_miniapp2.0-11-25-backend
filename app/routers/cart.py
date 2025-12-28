@@ -92,14 +92,12 @@ async def cleanup_expired_carts_periodic():
     import logging
     from pymongo.errors import AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError
     from ..database import get_db
-    from ..config import settings
     
     logger = logging.getLogger(__name__)
     
     # Настройки для оптимизации нагрузки
     BATCH_SIZE = 50  # Обрабатываем меньше корзин за раз
-    PRODUCTION_INTERVAL = 600  # 10 минут в production (вместо 5)
-    DEV_INTERVAL = 120  # 2 минуты в dev (вместо 1)
+    PRODUCTION_INTERVAL = 600  # 10 минут
     
     while True:
         try:
@@ -159,17 +157,14 @@ async def cleanup_expired_carts_periodic():
             if cleaned_count > 0:
                 logger.info(f"Очищено просроченных корзин: {cleaned_count}")
 
-            # Ждем перед следующей проверкой (реже в production для экономии ресурсов)
-            sleep_time = PRODUCTION_INTERVAL if settings.environment == "production" else DEV_INTERVAL
-            await asyncio.sleep(sleep_time)
+            # Ждем перед следующей проверкой (10 минут для экономии ресурсов)
+            await asyncio.sleep(PRODUCTION_INTERVAL)
         except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
             # Временные проблемы с подключением - игнорируем
-            sleep_time = PRODUCTION_INTERVAL if settings.environment == "production" else DEV_INTERVAL
-            await asyncio.sleep(sleep_time)
+            await asyncio.sleep(PRODUCTION_INTERVAL)
         except Exception as e:
             logger.error(f"Ошибка в фоновой задаче очистки корзин: {e}")
-            sleep_time = PRODUCTION_INTERVAL if settings.environment == "production" else DEV_INTERVAL
-            await asyncio.sleep(sleep_time)
+            await asyncio.sleep(PRODUCTION_INTERVAL)
 
 
 async def get_cart_document(db: AsyncIOMotorDatabase, user_id: int, check_expiry: bool = True):

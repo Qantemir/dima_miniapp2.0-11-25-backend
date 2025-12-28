@@ -191,11 +191,10 @@ class SafeGZipMiddleware(BaseHTTPMiddleware):
 # Добавляем безопасный GZip middleware (минимальный threshold для максимальной компрессии)
 app.add_middleware(SafeGZipMiddleware, minimum_size=200)
 
-# Добавляем Rate Limiting (только в продакшене или по настройке)
-if settings.environment == "production":
-    from .middleware.rate_limit import RateLimitMiddleware
+# Добавляем Rate Limiting
+from .middleware.rate_limit import RateLimitMiddleware
 
-    app.add_middleware(RateLimitMiddleware, default_limit=100, window=60)
+app.add_middleware(RateLimitMiddleware, default_limit=100, window=60)
 
 app.add_middleware(
     CORSMiddleware,
@@ -313,31 +312,23 @@ async def cleanup_deleted_orders():
                 except Exception as e:
                     logger.error(f"Ошибка при окончательном удалении заказа {order_doc.get('_id')}: {e}")
 
-            # Ждем перед следующей проверкой (дольше в production для экономии ресурсов)
-            sleep_time = 300 if settings.environment == "production" else 60  # 5 минут в production, 1 минута в dev
-            await asyncio.sleep(sleep_time)
+            # Ждем перед следующей проверкой (5 минут для экономии ресурсов)
+            await asyncio.sleep(300)
         except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
             # Временные проблемы с подключением - игнорируем
-            sleep_time = 300 if settings.environment == "production" else 60
-            await asyncio.sleep(sleep_time)
+            await asyncio.sleep(300)
         except Exception as e:
             logger.error(f"Ошибка в фоновой задаче очистки заказов: {e}")
-            sleep_time = 300 if settings.environment == "production" else 60
-            await asyncio.sleep(sleep_time)
+            await asyncio.sleep(300)
 
 
 @app.on_event("startup")
 async def startup():
     """Initialize application on startup."""
     # Настраиваем логирование для максимальной производительности
-    # Убираем лишние логи в production
-    if settings.environment == "production":
-        logging.getLogger("pymongo").setLevel(logging.ERROR)  # Только ошибки
-        logging.getLogger("motor").setLevel(logging.ERROR)
-        logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # Убираем access logs
-    else:
-        pymongo_logger = logging.getLogger("pymongo")
-        pymongo_logger.setLevel(logging.WARNING)  # Только предупреждения и ошибки
+    logging.getLogger("pymongo").setLevel(logging.ERROR)  # Только ошибки
+    logging.getLogger("motor").setLevel(logging.ERROR)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)  # Убираем access logs
 
     # Логируем информацию о конфигурации при старте
     logger = logging.getLogger(__name__)
@@ -348,12 +339,8 @@ async def startup():
     # Подключаемся к Redis при старте
     await get_redis()
 
-    # Запускаем фоновую задачу для очистки удаленных заказов (реже в production)
-    if settings.environment == "production":
-        # В production очищаем реже для экономии ресурсов
-        asyncio.create_task(cleanup_deleted_orders())
-    else:
-        asyncio.create_task(cleanup_deleted_orders())
+    # Запускаем фоновую задачу для очистки удаленных заказов
+    asyncio.create_task(cleanup_deleted_orders())
 
     # Запускаем фоновую задачу для очистки просроченных корзин
     asyncio.create_task(cleanup_expired_carts_periodic())
@@ -435,17 +422,13 @@ async def health():
 
 @app.get("/debug/env")
 async def debug_env():
-    """Debug endpoint to check environment variables (only in development)."""
+    """Debug endpoint to check environment variables."""
     import os
-    
-    if settings.environment == "production":
-        return {"error": "This endpoint is only available in development mode"}
     
     # Получаем все переменные окружения, связанные с ADMIN
     admin_vars = {k: v for k, v in os.environ.items() if "ADMIN" in k.upper()}
     
     return {
-        "environment": settings.environment,
         "admin_ids_from_settings": settings.admin_ids,
         "admin_ids_from_env": os.getenv("ADMIN_IDS"),
         "all_admin_env_vars": admin_vars,

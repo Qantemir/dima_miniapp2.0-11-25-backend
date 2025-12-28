@@ -34,11 +34,6 @@ class Settings(BaseSettings):
     # Значения по умолчанию, можно переопределить через env при необходимости
     upload_dir: Path = Field(ROOT_DIR / "uploads", env="UPLOAD_DIR")
     max_receipt_size_mb: int = Field(10, env="MAX_RECEIPT_SIZE_MB")  # 10 МБ по умолчанию
-    telegram_data_ttl_seconds: int = Field(300, env="TELEGRAM_DATA_TTL_SECONDS")  # 5 минут по умолчанию
-    catalog_cache_ttl_seconds: int = Field(600, env="CATALOG_CACHE_TTL_SECONDS")  # 10 минут по умолчанию
-    broadcast_batch_size: int = Field(50, env="BROADCAST_BATCH_SIZE")  # 50 по умолчанию (оптимизировано для продакшена)
-    broadcast_concurrency: int = Field(25, env="BROADCAST_CONCURRENCY")  # 25 по умолчанию (близко к лимиту Telegram 30/сек)
-    environment: str = Field("development", env="ENVIRONMENT")  # development/production
     public_url: str | None = Field(
         None, env="PUBLIC_URL"
     )  # Публичный URL для webhook (например, https://your-domain.com)
