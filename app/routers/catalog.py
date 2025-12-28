@@ -245,16 +245,7 @@ async def fetch_catalog(
     only_available: bool = True,
 ) -> Tuple[CatalogResponse, str]:
     """Загружает каталог из БД или кэша."""
-    global (
-        _catalog_cache_available,
-        _catalog_cache_available_etag,
-        _catalog_cache_available_expiration,
-        _catalog_cache_available_version,
-        _catalog_cache_all,
-        _catalog_cache_all_etag,
-        _catalog_cache_all_expiration,
-        _catalog_cache_all_version,
-    )
+    global _catalog_cache_available, _catalog_cache_available_etag, _catalog_cache_available_expiration, _catalog_cache_available_version, _catalog_cache_all, _catalog_cache_all_etag, _catalog_cache_all_expiration, _catalog_cache_all_version
     ttl = settings.catalog_cache_ttl_seconds
     now = datetime.utcnow()
 
@@ -394,16 +385,7 @@ async def fetch_catalog(
 
 async def invalidate_catalog_cache(db: AsyncIOMotorDatabase | None = None):
     """Инвалидирует кэш каталога."""
-    global (
-        _catalog_cache_available,
-        _catalog_cache_available_etag,
-        _catalog_cache_available_expiration,
-        _catalog_cache_available_version,
-        _catalog_cache_all,
-        _catalog_cache_all_etag,
-        _catalog_cache_all_expiration,
-        _catalog_cache_all_version,
-    )
+    global _catalog_cache_available, _catalog_cache_available_etag, _catalog_cache_available_expiration, _catalog_cache_available_version, _catalog_cache_all, _catalog_cache_all_etag, _catalog_cache_all_expiration, _catalog_cache_all_version
     # Инвалидируем оба кеша
     _catalog_cache_available = None
     _catalog_cache_available_expiration = None
