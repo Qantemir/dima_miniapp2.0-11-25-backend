@@ -182,6 +182,7 @@ class UpdateCartItemRequest(BaseModel):
 class OrderStatus(str, Enum):
     """OrderStatus модель."""
 
+    NEW = "новый"
     ACCEPTED = "принят"
     REJECTED = "отказано"
 

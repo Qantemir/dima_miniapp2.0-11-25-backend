@@ -323,6 +323,26 @@ async def restore_order(
     return Order(**serialize_doc(updated) | {"id": str(updated["_id"])})
 
 
+@router.delete("/admin/order/{order_id}")
+async def delete_order(
+    order_id: str,
+    db: AsyncIOMotorDatabase = Depends(get_db),
+    _admin_id: int = Depends(verify_admin),
+):
+    """Удаляет заказ (мягкое удаление)."""
+    order_oid = as_object_id(order_id)
+    doc = await db.orders.find_one({"_id": order_oid})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Заказ не найден")
+
+    # Помечаем заказ как удаленный
+    deleted = await mark_order_as_deleted(db, order_id)
+    if not deleted:
+        raise HTTPException(status_code=400, detail="Не удалось удалить заказ")
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/admin/broadcast", response_model=BroadcastResponse)
 async def send_broadcast(
     payload: BroadcastRequest,

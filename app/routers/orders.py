@@ -178,7 +178,7 @@ async def create_order(
         "customer_phone": phone,
         "delivery_address": address,
         "comment": comment,
-        "status": OrderStatus.ACCEPTED.value,
+        "status": OrderStatus.NEW.value,
         "items": items_dict,
         "total_amount": cart.total_amount,
         "can_edit_address": False,  # Адрес нельзя редактировать после создания
