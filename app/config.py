@@ -3,13 +3,38 @@
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, List
 
-from pydantic import Field, field_validator, ConfigDict, AliasChoices, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, ConfigDict, AliasChoices, model_validator, BeforeValidator
+from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
+from typing import Annotated, Any, List, Union
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 ENV_PATH = ROOT_DIR / ".env"
+
+
+def _parse_id_list(value: Any) -> List[int]:
+    """
+    Парсит значение в список целых чисел.
+    Обрабатывает строки вида "123,456", списки и другие типы.
+    """
+    if isinstance(value, list):
+        return [int(v) for v in value if v]
+    if isinstance(value, str):
+        str_value = value.strip()
+        if not str_value:
+            return []
+        # Разбиваем по запятой и обрабатываем каждый элемент
+        ids = []
+        for v in str_value.split(","):
+            v = v.strip()
+            if v:
+                try:
+                    ids.append(int(v))
+                except ValueError:
+                    # Пропускаем некорректное значение
+                    pass
+        return ids
+    return []
 
 
 class Settings(BaseSettings):
@@ -21,8 +46,8 @@ class Settings(BaseSettings):
     api_prefix: str = "/api"
     # BaseSettings автоматически загружает переменные окружения по имени поля (case-insensitive)
     # Но для надежности также проверяем ADMIN_IDS в валидаторе
-    admin_ids: List[int] = Field(default_factory=list)
-    backup_user_ids: List[int] = Field(default_factory=list, env="BACKUP_USER_IDS")
+    admin_ids: Annotated[List[int], NoDecode, BeforeValidator(_parse_id_list)] = Field(default_factory=list)
+    backup_user_ids: Annotated[List[int], NoDecode, BeforeValidator(_parse_id_list)] = Field(default_factory=list, env="BACKUP_USER_IDS")
 
     @property
     def admin_ids_set(self) -> set[int]:
@@ -87,54 +112,6 @@ class Settings(BaseSettings):
 
         return None
 
-    @field_validator("admin_ids", mode="before")
-    @classmethod
-    def split_admin_ids(cls, value):
-        """Разбивает строку ADMIN_IDS на список целых чисел."""
-        if isinstance(value, list):
-            return [int(v) for v in value]
-        # Обрабатываем строку - убираем пробелы и разбиваем по запятой
-        if isinstance(value, str):
-            str_value = value.strip()
-            if not str_value:
-                return []
-            # Разбиваем по запятой и обрабатываем каждый элемент
-            ids = []
-            for v in str_value.split(","):
-                v = v.strip()
-                if v:
-                    try:
-                        ids.append(int(v))
-                    except ValueError:
-                        # Пропускаем некорректное значение
-                        pass
-            return ids
-        return []
-
-    @field_validator("backup_user_ids", mode="before")
-    @classmethod
-    def split_backup_user_ids(cls, value):
-        """Разбивает строку BACKUP_USER_IDS на список целых чисел."""
-        if isinstance(value, list):
-            return [int(v) for v in value]
-        # Обрабатываем строку - убираем пробелы и разбиваем по запятой
-        if isinstance(value, str):
-            str_value = value.strip()
-            if not str_value:
-                return []
-            # Разбиваем по запятой и обрабатываем каждый элемент
-            ids = []
-            for v in str_value.split(","):
-                v = v.strip()
-                if v:
-                    try:
-                        ids.append(int(v))
-                    except ValueError:
-                        # Пропускаем некорректное значение
-                        pass
-            return ids
-        return []
-    
     @model_validator(mode="after")
     def load_env_variables(self):
         """Загружает переменные окружения, если они не были загружены автоматически."""
