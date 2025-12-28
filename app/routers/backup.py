@@ -253,8 +253,9 @@ async def export_database(
         io.BytesIO(compressed_data),
         media_type="application/gzip",
         headers={
-            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Disposition": f'attachment; filename="{filename}"',
             "Content-Type": "application/gzip",
+            "Content-Length": str(len(compressed_data)),
         }
     )
 
