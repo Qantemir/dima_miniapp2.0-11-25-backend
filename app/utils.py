@@ -74,6 +74,37 @@ def as_object_id(value: str | ObjectId) -> ObjectId:
         raise ValueError(f"Некорректный ObjectId: {value}") from e
 
 
+def normalize_product_images(doc: dict) -> dict:
+    """Нормализует поля image и images в единый массив images.
+    
+    Объединяет image и images в массив images, избегая дубликатов.
+    Для обратной совместимости оставляет поле image как первый элемент массива.
+    """
+    result = doc.copy()
+    images_list = []
+    
+    # Собираем все изображения
+    if "images" in doc and isinstance(doc["images"], list):
+        images_list = [img for img in doc["images"] if img]  # Фильтруем пустые значения
+    
+    if "image" in doc and doc["image"]:
+        # Добавляем image в начало массива, если его там еще нет
+        if doc["image"] not in images_list:
+            images_list.insert(0, doc["image"])
+    
+    # Обновляем поля
+    if images_list:
+        result["images"] = images_list
+        # Для обратной совместимости оставляем image как первый элемент
+        result["image"] = images_list[0]
+    else:
+        # Если нет изображений, удаляем оба поля
+        result.pop("image", None)
+        result.pop("images", None)
+    
+    return result
+
+
 def serialize_doc(doc: dict | None) -> dict:
     """
     Сериализует документ MongoDB, преобразуя ObjectId в строки.
@@ -609,3 +640,50 @@ async def save_base64_images_to_gridfs(
                 results.append(file_id)
     
     return results
+
+
+def _delete_gridfs_file(file_id: str) -> None:
+    """
+    Вспомогательная функция для синхронного удаления файла из GridFS.
+    
+    Args:
+        file_id: ID файла в GridFS
+    """
+    fs = get_gridfs()
+    fs.delete(ObjectId(file_id))
+
+
+async def delete_product_images_from_gridfs(
+    product_doc: dict
+) -> None:
+    """
+    Удаляет изображения товара из GridFS.
+    
+    Args:
+        product_doc: Документ товара с полями image и images
+    """
+    import asyncio
+    
+    loop = asyncio.get_event_loop()
+    
+    # Удаляем основное изображение
+    if product_doc.get("image"):
+        image_id = product_doc["image"]
+        # Проверяем, что это не base64 строка (старые данные)
+        if isinstance(image_id, str) and not image_id.startswith("data:image") and ObjectId.is_valid(image_id):
+            try:
+                await loop.run_in_executor(None, _delete_gridfs_file, image_id)
+                logger.debug(f"Удалено основное изображение товара: {image_id}")
+            except Exception as e:
+                logger.error(f"Ошибка при удалении основного изображения товара {image_id}: {e}")
+    
+    # Удаляем дополнительные изображения
+    if product_doc.get("images") and isinstance(product_doc["images"], list):
+        for image_id in product_doc["images"]:
+            # Проверяем, что это не base64 строка (старые данные)
+            if isinstance(image_id, str) and not image_id.startswith("data:image") and ObjectId.is_valid(image_id):
+                try:
+                    await loop.run_in_executor(None, _delete_gridfs_file, image_id)
+                    logger.debug(f"Удалено дополнительное изображение товара: {image_id}")
+                except Exception as e:
+                    logger.error(f"Ошибка при удалении дополнительного изображения товара {image_id}: {e}")

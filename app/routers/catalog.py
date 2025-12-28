@@ -39,7 +39,9 @@ from ..schemas import (
 )
 from ..utils import (
     as_object_id,
+    delete_product_images_from_gridfs,
     get_gridfs,
+    normalize_product_images,
     save_base64_image_to_gridfs,
     save_base64_images_to_gridfs,
     serialize_doc,
@@ -47,6 +49,8 @@ from ..utils import (
 
 router = APIRouter(tags=["catalog"])
 logger = logging.getLogger(__name__)
+
+
 
 # Раздельные кеши для публичного каталога (only_available=True) и админки (only_available=False)
 _catalog_cache_available: CatalogResponse | None = None
@@ -143,10 +147,14 @@ async def _load_catalog_from_db(db: AsyncIOMotorDatabase, only_available: bool =
         if "description" in doc and doc["description"]:
             desc = doc["description"]
             product_data["description"] = desc[:300] if isinstance(desc, str) and len(desc) > 300 else desc
-        if "image" in doc:
-            product_data["image"] = doc["image"]
-        if "images" in doc:
-            product_data["images"] = doc["images"]
+        
+        # Нормализуем изображения: объединяем image и images в единый массив images
+        normalized_doc = normalize_product_images(doc)
+        if "images" in normalized_doc:
+            product_data["images"] = normalized_doc["images"]
+        if "image" in normalized_doc:
+            product_data["image"] = normalized_doc["image"]
+        
         if "variants" in doc:
             product_data["variants"] = doc["variants"]
 
@@ -609,7 +617,9 @@ async def get_admin_category_detail(
     products_models = []
     for doc in products_docs:
         try:
-            serialized = serialize_doc(doc)
+            # Нормализуем изображения перед сериализацией
+            normalized_doc = normalize_product_images(doc)
+            serialized = serialize_doc(normalized_doc)
             serialized.pop("_id", None)  # Удаляем _id, так как используем id
             products_models.append(Product(**serialized | {"id": str(doc["_id"])}))
         except Exception:
@@ -726,7 +736,7 @@ async def delete_category(
     db: AsyncIOMotorDatabase = Depends(get_db),
     _admin_id: int = Depends(verify_admin),
 ):
-    """Удаляет категорию и все связанные товары."""
+    """Удаляет категорию и все связанные товары с их изображениями из GridFS."""
     category_doc = await db.categories.find_one({"_id": {"$in": _build_id_candidates(category_id)}})
     if not category_doc:
         raise HTTPException(status_code=404, detail="Категория не найдена")
@@ -738,8 +748,20 @@ async def delete_category(
     if isinstance(category_doc["_id"], ObjectId):
         cleanup_values.add(category_doc["_id"])
 
+    # Получаем все товары категории с их изображениями перед удалением
+    products = await db.products.find(
+        {"category_id": {"$in": list(cleanup_values)}},
+        {"image": 1, "images": 1}
+    ).to_list(length=None)
+    
+    # Удаляем изображения всех товаров из GridFS
+    for product_doc in products:
+        await delete_product_images_from_gridfs(product_doc)
+    
+    # Удаляем все товары категории
     await db.products.delete_many({"category_id": {"$in": list(cleanup_values)}})
 
+    # Удаляем саму категорию
     delete_result = await db.categories.delete_one({"_id": category_doc["_id"]})
     if delete_result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Категория не найдена")
@@ -788,6 +810,9 @@ async def create_product(
         else:
             data.pop("images", None)
     
+    # Нормализуем изображения: синхронизируем image и images
+    data = normalize_product_images(data)
+    
     result = await db.products.insert_one(data)
     # Используем проекцию для минимизации загружаемых данных
     doc = await db.products.find_one(
@@ -806,7 +831,9 @@ async def create_product(
     )
     # Инвалидируем кэш параллельно с подготовкой ответа
     cache_task = asyncio.create_task(invalidate_catalog_cache(db))
-    serialized = serialize_doc(doc)
+    # Нормализуем изображения перед сериализацией (на случай если данные уже были в БД)
+    normalized_doc = normalize_product_images(doc)
+    serialized = serialize_doc(normalized_doc)
     serialized.pop("_id", None)  # Удаляем _id, так как используем id
     product = Product(**serialized | {"id": str(doc["_id"])})
     # Ждем инвалидации кэша и обновляем его в фоне
@@ -867,6 +894,27 @@ async def update_product(
                 else:
                     update_payload.pop("images", None)
     
+    # Нормализуем изображения: синхронизируем image и images перед сохранением
+    if "image" in update_payload or "images" in update_payload:
+        # Получаем текущие данные товара для нормализации
+        current_product = await db.products.find_one({"_id": product_oid}, {"image": 1, "images": 1})
+        if current_product:
+            # Объединяем текущие и новые данные для нормализации
+            merged_data = {
+                "image": update_payload.get("image", current_product.get("image")),
+                "images": update_payload.get("images", current_product.get("images")),
+            }
+            normalized = normalize_product_images(merged_data)
+            # Обновляем только измененные поля
+            if "image" in normalized:
+                update_payload["image"] = normalized["image"]
+            if "images" in normalized:
+                update_payload["images"] = normalized["images"]
+        else:
+            # Если товар не найден, нормализуем только новые данные
+            normalized = normalize_product_images(update_payload)
+            update_payload.update(normalized)
+    
     # Обновляем с проекцией для минимизации данных
     doc = await db.products.find_one_and_update(
         {"_id": product_oid},
@@ -889,7 +937,9 @@ async def update_product(
     
     # Инвалидируем кэш параллельно с подготовкой ответа
     cache_task = asyncio.create_task(invalidate_catalog_cache(db))
-    serialized = serialize_doc(doc)
+    # Нормализуем изображения перед сериализацией
+    normalized_doc = normalize_product_images(doc)
+    serialized = serialize_doc(normalized_doc)
     serialized.pop("_id", None)  # Удаляем _id, так как используем id
     product = Product(**serialized | {"id": str(doc["_id"])})
     # Ждем инвалидации кэша и обновляем его в фоне
@@ -935,10 +985,26 @@ async def delete_product(
     db: AsyncIOMotorDatabase = Depends(get_db),
     _admin_id: int = Depends(verify_admin),
 ):
-    """Удаляет товар."""
-    result = await db.products.delete_one({"_id": as_object_id(product_id)})
+    """Удаляет товар и все его изображения из GridFS."""
+    product_oid = as_object_id(product_id)
+    
+    # Получаем товар с изображениями перед удалением
+    product_doc = await db.products.find_one(
+        {"_id": product_oid},
+        {"image": 1, "images": 1}
+    )
+    
+    if not product_doc:
+        raise HTTPException(status_code=404, detail="Товар не найден")
+    
+    # Удаляем изображения из GridFS
+    await delete_product_images_from_gridfs(product_doc)
+    
+    # Удаляем товар из базы данных
+    result = await db.products.delete_one({"_id": product_oid})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Товар не найден")
+    
     # Инвалидируем кэш параллельно с подготовкой ответа
     cache_task = asyncio.create_task(invalidate_catalog_cache(db))
     # Ждем инвалидации кэша и обновляем его в фоне

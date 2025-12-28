@@ -11,7 +11,7 @@ from pymongo.errors import DuplicateKeyError
 from ..database import get_db
 from ..schemas import AddToCartRequest, Cart, RemoveFromCartRequest, UpdateCartItemRequest
 from ..security import TelegramUser, get_current_user
-from ..utils import as_object_id, decrement_variant_quantity, restore_variant_quantity, serialize_doc
+from ..utils import as_object_id, decrement_variant_quantity, normalize_product_images, restore_variant_quantity, serialize_doc
 
 # Время жизни корзины в минутах
 CART_EXPIRY_MINUTES = 30
@@ -202,12 +202,14 @@ async def add_to_cart(
     # Получаем товар и корзину параллельно для оптимизации
     # Для добавления в корзину не нужно проверять истечение (это делается при GET)
     # Используем проекцию для товара - не загружаем лишние поля
+    # Включаем и image, и images для нормализации
     product_task = db.products.find_one(
         {"_id": product_oid},
         {
             "name": 1,
             "price": 1,
             "image": 1,
+            "images": 1,
             "variants": 1,
             "_id": 1,
         },
@@ -218,6 +220,9 @@ async def add_to_cart(
 
     if not product:
         raise HTTPException(status_code=404, detail="Товар не найден")
+    
+    # Нормализуем изображения товара для консистентности
+    product = normalize_product_images(product)
 
     # Вариации обязательны для всех товаров
     variants = product.get("variants", [])
@@ -304,7 +309,13 @@ async def add_to_cart(
             "variant_name": variant_name,
             "quantity": payload.quantity,
             "price": variant_price,
-            "image": variant.get("image") if variant else product.get("image"),
+            # Используем первое изображение из массива images, или fallback на image для обратной совместимости
+            "image": (
+                (variant.get("images") or [])[0] if variant and variant.get("images") 
+                else variant.get("image") if variant 
+                else (product.get("images") or [])[0] if product.get("images") 
+                else product.get("image")
+            ),
         }
 
         # Сначала списываем товар
