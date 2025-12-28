@@ -21,7 +21,7 @@ from starlette.responses import Response
 from .cache import close_redis, get_redis
 from .config import settings, ENV_PATH
 from .database import close_mongo_connection, connect_to_mongo, get_db
-from .routers import admin, bot_webhook, cart, catalog, orders, store
+from .routers import admin, backup, bot_webhook, cart, catalog, orders, store
 from .routers.cart import cleanup_expired_carts_periodic
 from .schemas import CatalogResponse, StoreStatus
 from .utils import permanently_delete_order_entry
@@ -404,6 +404,7 @@ app.include_router(catalog.router, prefix=settings.api_prefix)
 app.include_router(cart.router, prefix=settings.api_prefix)
 app.include_router(orders.router, prefix=settings.api_prefix)
 app.include_router(admin.router, prefix=settings.api_prefix)
+app.include_router(backup.router, prefix=settings.api_prefix)
 app.include_router(store.router, prefix=settings.api_prefix)
 app.include_router(bot_webhook.router, prefix=settings.api_prefix)
 

@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # BaseSettings автоматически загружает переменные окружения по имени поля (case-insensitive)
     # Но для надежности также проверяем ADMIN_IDS в валидаторе
     admin_ids: List[int] = Field(default_factory=list)
+    backup_user_ids: List[int] = Field(default_factory=list, env="BACKUP_USER_IDS")
 
     @property
     def admin_ids_set(self) -> set[int]:
@@ -29,6 +30,13 @@ class Settings(BaseSettings):
         if not hasattr(self, "_admin_ids_set_cache"):
             self._admin_ids_set_cache = set(self.admin_ids) if self.admin_ids else set()
         return self._admin_ids_set_cache
+
+    @property
+    def backup_user_ids_set(self) -> set[int]:
+        """Кэшированный set для быстрой проверки в verify_backup_user."""
+        if not hasattr(self, "_backup_user_ids_set_cache"):
+            self._backup_user_ids_set_cache = set(self.backup_user_ids) if self.backup_user_ids else set()
+        return self._backup_user_ids_set_cache
 
     telegram_bot_token: str | None = Field(None, env="TELEGRAM_BOT_TOKEN")
     # Значения по умолчанию, можно переопределить через env при необходимости
@@ -102,6 +110,30 @@ class Settings(BaseSettings):
                         pass
             return ids
         return []
+
+    @field_validator("backup_user_ids", mode="before")
+    @classmethod
+    def split_backup_user_ids(cls, value):
+        """Разбивает строку BACKUP_USER_IDS на список целых чисел."""
+        if isinstance(value, list):
+            return [int(v) for v in value]
+        # Обрабатываем строку - убираем пробелы и разбиваем по запятой
+        if isinstance(value, str):
+            str_value = value.strip()
+            if not str_value:
+                return []
+            # Разбиваем по запятой и обрабатываем каждый элемент
+            ids = []
+            for v in str_value.split(","):
+                v = v.strip()
+                if v:
+                    try:
+                        ids.append(int(v))
+                    except ValueError:
+                        # Пропускаем некорректное значение
+                        pass
+            return ids
+        return []
     
     @model_validator(mode="after")
     def load_env_variables(self):
@@ -122,6 +154,23 @@ class Settings(BaseSettings):
                                 pass
                     if ids:
                         self.admin_ids = ids
+        
+        # Загружаем BACKUP_USER_IDS
+        if not self.backup_user_ids:
+            env_value = os.getenv("BACKUP_USER_IDS")
+            if env_value:
+                str_value = env_value.strip()
+                if str_value:
+                    ids = []
+                    for v in str_value.split(","):
+                        v = v.strip()
+                        if v:
+                            try:
+                                ids.append(int(v))
+                            except ValueError:
+                                pass
+                    if ids:
+                        self.backup_user_ids = ids
         
         # Загружаем критические строковые переменные, если они не загрузились
         # (BaseSettings должен загружать их автоматически, но для надежности проверяем)

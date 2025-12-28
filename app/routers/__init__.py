@@ -1,5 +1,5 @@
 """Routers package."""
 
-from . import admin, cart, catalog, orders, store
+from . import admin, backup, cart, catalog, orders, store
 
-__all__ = ["admin", "cart", "catalog", "orders", "store"]
+__all__ = ["admin", "backup", "cart", "catalog", "orders", "store"]
