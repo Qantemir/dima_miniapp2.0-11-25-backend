@@ -943,6 +943,20 @@ async def update_product(
     return product
 
 
+@router.options("/product/image/{file_id}")
+async def options_product_image(file_id: str):
+    """Обрабатывает OPTIONS запрос для CORS preflight."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "86400",  # 24 часа
+        },
+    )
+
+
 @router.get("/product/image/{file_id}")
 async def get_product_image(
     file_id: str,

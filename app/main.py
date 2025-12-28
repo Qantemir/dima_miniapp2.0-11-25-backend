@@ -268,6 +268,14 @@ async def apply_security_and_cache_headers(request, call_next):
 
     # Cache-Control headers для оптимизации
     path = request.url.path
+    
+    # Убеждаемся, что CORS заголовки присутствуют для всех ответов, особенно для изображений
+    if "/product/image/" in path or path.startswith("/api/product/image/"):
+        # Явно добавляем CORS заголовки для изображений продуктов
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    
     if path.startswith("/api/catalog"):
         # Каталог кэшируется на 10 минут для максимальной производительности
         response.headers["Cache-Control"] = "public, max-age=600, stale-while-revalidate=120"
