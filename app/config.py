@@ -4,9 +4,9 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator, ConfigDict, AliasChoices, model_validator, BeforeValidator
-from pydantic_settings import BaseSettings, SettingsConfigDict, NoDecode
-from typing import Annotated, Any, List, Union
+from pydantic import Field, field_validator, ConfigDict, AliasChoices, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Any, List
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 ENV_PATH = ROOT_DIR / ".env"
@@ -46,8 +46,8 @@ class Settings(BaseSettings):
     api_prefix: str = "/api"
     # BaseSettings автоматически загружает переменные окружения по имени поля (case-insensitive)
     # Но для надежности также проверяем ADMIN_IDS в валидаторе
-    admin_ids: Annotated[List[int], NoDecode, BeforeValidator(_parse_id_list)] = Field(default_factory=list)
-    backup_user_ids: Annotated[List[int], NoDecode, BeforeValidator(_parse_id_list)] = Field(default_factory=list, env="BACKUP_USER_IDS")
+    admin_ids: List[int] = Field(default_factory=list)
+    backup_user_ids: List[int] = Field(default_factory=list, env="BACKUP_USER_IDS")
 
     @property
     def admin_ids_set(self) -> set[int]:
@@ -111,6 +111,30 @@ class Settings(BaseSettings):
             return service_url
 
         return None
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_id_fields_before(cls, data: Any) -> Any:
+        """
+        Обрабатывает поля admin_ids и backup_user_ids до создания модели.
+        Это предотвращает попытку JSON парсинга pydantic-settings.
+        """
+        if isinstance(data, dict):
+            # Обрабатываем admin_ids
+            if "admin_ids" in data:
+                data["admin_ids"] = _parse_id_list(data["admin_ids"])
+            if "ADMIN_IDS" in data:
+                data["admin_ids"] = _parse_id_list(data["ADMIN_IDS"])
+                del data["ADMIN_IDS"]
+            
+            # Обрабатываем backup_user_ids
+            if "backup_user_ids" in data:
+                data["backup_user_ids"] = _parse_id_list(data["backup_user_ids"])
+            if "BACKUP_USER_IDS" in data:
+                data["backup_user_ids"] = _parse_id_list(data["BACKUP_USER_IDS"])
+                del data["BACKUP_USER_IDS"]
+        
+        return data
 
     @model_validator(mode="after")
     def load_env_variables(self):
