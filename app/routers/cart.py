@@ -105,7 +105,7 @@ async def cleanup_expired_carts_periodic():
         try:
             # Получаем базу данных
             db = await get_db()
-            if not db:
+            if db is None:
                 await asyncio.sleep(60)
                 continue
 

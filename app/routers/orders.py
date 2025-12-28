@@ -206,7 +206,13 @@ async def create_order(
     order_doc["_id"] = result.inserted_id
     
     # Удаляем корзину в фоне (не ждем завершения для ускорения ответа)
-    asyncio.create_task(db.carts.delete_one({"_id": as_object_id(cart.id)}))
+    async def delete_cart_background():
+        try:
+            await db.carts.delete_one({"_id": as_object_id(cart.id)})
+        except Exception:
+            pass  # Игнорируем ошибки при удалении корзины в фоне
+    
+    asyncio.create_task(delete_cart_background())
     
     # Создаем объект Order из order_doc без дополнительного запроса к БД
     order = Order(**serialize_doc(order_doc) | {"id": str(result.inserted_id)})
