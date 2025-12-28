@@ -420,8 +420,13 @@ async def send_broadcast(
                     continue
                 
                 # Постоянные ошибки (невалидные пользователи)
+                invalid_phrases = (
+                    "chat not found", "user not found", "blocked", "bot blocked",
+                    "bot was blocked", "user is deactivated", "receiver not found",
+                    "chat_id is empty", "peer_id_invalid"
+                )
                 is_invalid = error_code in {400, 403, 404} or any(
-                    phrase in description for phrase in ("chat not found", "user not found", "blocked", "bot blocked")
+                    phrase in description for phrase in invalid_phrases
                 )
                 return False, is_invalid
                 
@@ -465,53 +470,50 @@ async def send_broadcast(
 
     # Используем connection pooling для лучшей производительности
     limits = httpx.Limits(max_keepalive_connections=20, max_connections=100)
-    async with httpx.AsyncClient(timeout=15.0, limits=limits) as client:
-        batch_num = 0
-        while True:
-            batch = await customers_cursor.to_list(length=batch_size)
-            if not batch:
-                break
-            
-            batch_num += 1
-            total_count += len(batch)
-            telegram_ids = [customer["telegram_id"] for customer in batch]
+    try:
+        async with httpx.AsyncClient(timeout=15.0, limits=limits) as client:
+            batch_num = 0
+            while True:
+                batch = await customers_cursor.to_list(length=batch_size)
+                if not batch:
+                    break
+                
+                batch_num += 1
+                total_count += len(batch)
+                telegram_ids = [customer["telegram_id"] for customer in batch]
 
-            # Логируем прогресс каждые 10 батчей
-            if batch_num % 10 == 0:
-                elapsed = time.time() - start_time
-                rate = sent_count / elapsed if elapsed > 0 else 0
-                logger.info(
-                    f"Рассылка: обработано {total_count} пользователей, "
-                    f"отправлено {sent_count}, ошибок {failed_count}, "
-                    f"скорость {rate:.1f} сообщений/сек"
-                )
+                # Логируем прогресс каждые 10 батчей
+                if batch_num % 10 == 0:
+                    elapsed = time.time() - start_time
+                    rate = sent_count / elapsed if elapsed > 0 else 0
+                    logger.info(
+                        f"Рассылка: обработано {total_count} пользователей, "
+                        f"отправлено {sent_count}, ошибок {failed_count}, "
+                        f"скорость {rate:.1f} сообщений/сек"
+                    )
 
-            # Ограничиваем конкуренцию, разбивая на подгруппы
-            for i in range(0, len(telegram_ids), concurrency):
-                chunk = telegram_ids[i : i + concurrency]
-                results = await asyncio.gather(
-                    *[send_to_customer_with_retry(client, telegram_id) for telegram_id in chunk],
-                    return_exceptions=True,  # Обрабатываем исключения
-                )
-                for telegram_id, result in zip(chunk, results):
-                    if isinstance(result, Exception):
-                        logger.warning(f"Исключение при отправке пользователю {telegram_id}: {result}")
-                        failed_count += 1
-                        continue
-                    sent, invalid = result
-                    if sent:
-                        sent_count += 1
-                    elif invalid:
-                        invalid_user_ids.append(telegram_id)
-                    else:
-                        failed_count += 1
-
-            # Периодически очищаем невалидных пользователей
-            if len(invalid_user_ids) >= 500:
-                await flush_invalids()
-
-    # Финальная очистка невалидных пользователей
-    await flush_invalids()
+                # Ограничиваем конкуренцию, разбивая на подгруппы
+                for i in range(0, len(telegram_ids), concurrency):
+                    chunk = telegram_ids[i : i + concurrency]
+                    results = await asyncio.gather(
+                        *[send_to_customer_with_retry(client, telegram_id) for telegram_id in chunk],
+                        return_exceptions=True,  # Обрабатываем исключения
+                    )
+                    for telegram_id, result in zip(chunk, results):
+                        if isinstance(result, Exception):
+                            logger.warning(f"Исключение при отправке пользователю {telegram_id}: {result}")
+                            failed_count += 1
+                            continue
+                        sent, invalid = result
+                        if sent:
+                            sent_count += 1
+                        elif invalid:
+                            invalid_user_ids.append(telegram_id)
+                        else:
+                            failed_count += 1
+    finally:
+        # Финальная очистка невалидных пользователей (гарантированно выполняется даже при ошибках)
+        await flush_invalids()
 
     elapsed_time = time.time() - start_time
     rate = sent_count / elapsed_time if elapsed_time > 0 else 0
@@ -521,20 +523,5 @@ async def send_broadcast(
         f"Рассылка завершена: всего {total_count}, отправлено {sent_count}, "
         f"ошибок {failed_count}, время {elapsed_time:.1f}с, скорость {rate:.1f} сообщений/сек"
     )
-
-    # Сохраняем запись о рассылке с статистикой
-    entry = {
-        "title": payload.title,
-        "message": payload.message,
-        "segment": payload.segment,
-        "link": payload.link,
-        "total_count": total_count,
-        "sent_count": sent_count,
-        "failed_count": failed_count,
-        "duration_seconds": round(elapsed_time, 2),
-        "rate_per_second": round(rate, 2),
-        "created_at": datetime.utcnow(),
-    }
-    await db.broadcasts.insert_one(entry)
 
     return BroadcastResponse(success=True, sent_count=sent_count, total_count=total_count, failed_count=failed_count)

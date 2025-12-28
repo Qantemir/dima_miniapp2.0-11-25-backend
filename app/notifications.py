@@ -310,10 +310,10 @@ async def notify_customer_order_status(
 
     # Формируем сообщение в зависимости от статуса
     if order_status == "принят":
-        status_message = "✅ Ваш заказ принят! Мы привезем его в течение 2 часов."
+        status_message = "✅ Ваш заказ принят! Мы привезем его в течение часа."
     elif order_status == "отказано":
         reason_text = f"\n\nПричина: {rejection_reason}" if rejection_reason else ""
-        status_message = f"❌ Ваш заказ отклонен.{reason_text}"
+        status_message = f"❌ Ваш заказ отклонен по какой-то причине.{reason_text}"
     else:
         status_message = f"Статус вашего заказа изменён: {order_status}"
 
@@ -332,8 +332,10 @@ async def notify_customer_order_status(
                     "parse_mode": "Markdown",
                 },
             )
-            response.json()
-
-            # Убираем логирование для скорости (не критично)
-    except Exception:
-        pass  # Игнорируем ошибки для скорости
+            result = response.json()
+            if result.get("ok"):
+                logger.info(f"Уведомление клиенту отправлено успешно: user_id={user_id}, order_id={order_id}, status={order_status}")
+            else:
+                logger.error(f"Ошибка при отправке уведомления клиенту: {result.get('description', 'Unknown error')}, user_id={user_id}, order_id={order_id}")
+    except Exception as e:
+        logger.error(f"Исключение при отправке уведомления клиенту: {e}, user_id={user_id}, order_id={order_id}")

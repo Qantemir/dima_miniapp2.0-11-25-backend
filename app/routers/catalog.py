@@ -183,6 +183,11 @@ def _generate_cache_version() -> str:
     return str(ObjectId())
 
 
+def _empty_catalog() -> CatalogResponse:
+    """Создает пустой каталог для fallback ответов."""
+    return CatalogResponse(categories=[], products=[])
+
+
 async def _get_catalog_cache_version(db: AsyncIOMotorDatabase, use_memory_cache: bool = True) -> str:
     """
     Получает версию кеша каталога с опциональным кешированием в памяти.
@@ -273,8 +278,7 @@ async def fetch_catalog(
     if db is None:
         if cache is not None and cache_etag is not None:
             return cache, cache_etag
-        empty_catalog = CatalogResponse(categories=[], products=[])
-        return empty_catalog, "empty-catalog"
+        return _empty_catalog(), "empty-catalog"
 
     # Быстрая проверка кеша без запроса к БД
     # Если кеш валиден и версия в памяти совпадает, возвращаем сразу
@@ -300,8 +304,7 @@ async def fetch_catalog(
     except Exception:
         if cache is not None and cache_etag is not None:
             return cache, cache_etag
-        empty_catalog = CatalogResponse(categories=[], products=[])
-        return empty_catalog, "error-catalog"
+        return _empty_catalog(), "error-catalog"
 
     # Проверяем кеш еще раз после получения версии
     if (
@@ -355,8 +358,7 @@ async def fetch_catalog(
             except Exception:
                 if cache is not None and cache_etag is not None:
                     return cache, cache_etag
-                empty_catalog = CatalogResponse(categories=[], products=[])
-                return empty_catalog, "error-catalog"
+                return _empty_catalog(), "error-catalog"
 
             if ttl > 0:
                 if only_available:
@@ -387,8 +389,7 @@ async def fetch_catalog(
         # Возвращаем кеш или пустой каталог
         if cache is not None and cache_etag is not None:
             return cache, cache_etag
-        empty_catalog = CatalogResponse(categories=[], products=[])
-        return empty_catalog, "error-catalog"
+        return _empty_catalog(), "error-catalog"
 
 
 async def invalidate_catalog_cache(db: AsyncIOMotorDatabase | None = None):
@@ -523,24 +524,18 @@ async def get_catalog(
             if if_none_match and if_none_match == etag:
                 return _build_not_modified_response(etag)
             return _build_catalog_response(catalog, etag)
-        except Exception:
-            empty_catalog = CatalogResponse(categories=[], products=[])
-            etag = "error-catalog-fallback"
-            return _build_catalog_response(empty_catalog, etag)
         except HTTPException as e:
             # Если БД недоступна, возвращаем пустой каталог вместо ошибки
             if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
-                empty_catalog = CatalogResponse(categories=[], products=[])
-                etag = "empty-catalog"
-                return _build_catalog_response(empty_catalog, etag)
+                return _build_catalog_response(_empty_catalog(), "empty-catalog")
             logger.error(f"HTTPException при получении каталога: {e.status_code} - {e.detail}")
             raise
+        except Exception:
+            return _build_catalog_response(_empty_catalog(), "error-catalog-fallback")
     except Exception as e:
         logger.error(f"Ошибка при получении каталога: {type(e).__name__}: {e}", exc_info=True)
         # Возвращаем пустой каталог вместо 500, чтобы фронтенд не падал
-        empty_catalog = CatalogResponse(categories=[], products=[])
-        etag = "error-catalog"
-        return _build_catalog_response(empty_catalog, etag)
+        return _build_catalog_response(_empty_catalog(), "error-catalog")
 
 
 @router.get("/admin/catalog", response_model=CatalogResponse)
@@ -969,6 +964,9 @@ async def get_product_image(
             headers={
                 "Content-Disposition": f'inline; filename="{filename}"',
                 "Cache-Control": "public, max-age=31536000",  # Кешируем на 1 год
+                "Access-Control-Allow-Origin": "*",  # Явные CORS заголовки для изображений
+                "Access-Control-Allow-Methods": "GET, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
             },
         )
     except Exception as e:

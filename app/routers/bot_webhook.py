@@ -156,11 +156,13 @@ async def handle_bot_webhook(
 
             order_id = parts[1]
             new_status_value = parts[2]
+            
+            logger.info(f"Processing status change: order_id={order_id}, new_status={new_status_value}, user_id={user_id}")
 
             # Получаем заказ
             doc = await db.orders.find_one({"_id": as_object_id(order_id)})
             if not doc:
-                await _answer_callback_query(callback_query.get("id"), "Заказ не найден", show_alert=True)
+                await _answer_callback_query(callback_query_id, "Заказ не найден", show_alert=True)
                 return {"ok": True}
 
             # Проверяем, что статус валидный
@@ -253,6 +255,7 @@ async def handle_bot_webhook(
                 if customer_user_id and old_status != new_status_value:
                     try:
                         rejection_reason = updated.get("rejection_reason") if new_status_value == OrderStatus.REJECTED.value else None
+                        logger.info(f"Sending notification to customer: user_id={customer_user_id}, order_id={order_id}, status={new_status_value}")
                         await notify_customer_order_status(
                             user_id=customer_user_id,
                             order_id=order_id,
@@ -260,6 +263,7 @@ async def handle_bot_webhook(
                             customer_name=updated.get("customer_name"),
                             rejection_reason=rejection_reason,
                         )
+                        logger.info(f"Notification sent successfully to customer {customer_user_id}")
                     except Exception as e:
                         logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
             else:

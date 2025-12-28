@@ -22,6 +22,7 @@ from .cache import close_redis, get_redis
 from .config import settings, ENV_PATH
 from .database import close_mongo_connection, connect_to_mongo, get_db
 from .routers import admin, bot_webhook, cart, catalog, orders, store
+from .routers.cart import cleanup_expired_carts_periodic
 from .schemas import CatalogResponse, StoreStatus
 from .utils import permanently_delete_order_entry
 
@@ -353,6 +354,9 @@ async def startup():
         asyncio.create_task(cleanup_deleted_orders())
     else:
         asyncio.create_task(cleanup_deleted_orders())
+
+    # Запускаем фоновую задачу для очистки просроченных корзин
+    asyncio.create_task(cleanup_expired_carts_periodic())
 
     # Настраиваем webhook для Telegram Bot API (если указан публичный URL)
     logger = logging.getLogger(__name__)

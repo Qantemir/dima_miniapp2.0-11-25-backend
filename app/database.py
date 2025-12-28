@@ -117,7 +117,8 @@ async def ensure_indexes(database: AsyncIOMotorDatabase):
 
     # Корзины - уникальный индекс для быстрого поиска
     await database.carts.create_index("user_id", unique=True)
-    await database.carts.create_index("updated_at")  # Для очистки просроченных корзин
+    await database.carts.create_index("updated_at")  # Для очистки просроченных корзин (основной запрос)
+    await database.carts.create_index("created_at")  # Для корзин без updated_at (редкий случай)
 
     # Заказы - составные индексы для разных запросов
     await database.orders.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])

@@ -82,6 +82,96 @@ async def cleanup_expired_cart(db: AsyncIOMotorDatabase, cart: dict):
     return False
 
 
+async def cleanup_expired_carts_periodic():
+    """
+    Фоновая задача для периодической очистки просроченных корзин.
+    
+    Оптимизированная версия: использует индекс на updated_at, обрабатывает небольшие батчи,
+    работает реже в production для снижения нагрузки на сервер.
+    """
+    import logging
+    from pymongo.errors import AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError
+    from ..database import get_db
+    from ..config import settings
+    
+    logger = logging.getLogger(__name__)
+    
+    # Настройки для оптимизации нагрузки
+    BATCH_SIZE = 50  # Обрабатываем меньше корзин за раз
+    PRODUCTION_INTERVAL = 600  # 10 минут в production (вместо 5)
+    DEV_INTERVAL = 120  # 2 минуты в dev (вместо 1)
+    
+    while True:
+        try:
+            # Получаем базу данных
+            db = await get_db()
+            if not db:
+                await asyncio.sleep(60)
+                continue
+
+            # Находим корзины, которые не обновлялись более CART_EXPIRY_MINUTES минут
+            # Используем только updated_at (есть индекс) для быстрого поиска
+            cutoff_time = datetime.utcnow() - timedelta(minutes=CART_EXPIRY_MINUTES)
+            
+            # Оптимизированный запрос: используем индекс на updated_at, загружаем только нужные поля
+            expired_carts = await db.carts.find(
+                {
+                    "items": {"$exists": True, "$ne": []},  # Только корзины с товарами
+                    "updated_at": {"$lte": cutoff_time}  # Используем индекс
+                },
+                {
+                    "_id": 1,
+                    "items": 1,
+                    "updated_at": 1,
+                    "created_at": 1
+                }  # Проекция: загружаем только нужные поля
+            ).limit(BATCH_SIZE).to_list(length=BATCH_SIZE)
+            
+            # Также проверяем корзины без updated_at (используем created_at)
+            # Это редкий случай, поэтому проверяем отдельно и с меньшим лимитом
+            carts_without_updated = await db.carts.find(
+                {
+                    "items": {"$exists": True, "$ne": []},
+                    "updated_at": {"$exists": False},
+                    "created_at": {"$lte": cutoff_time}
+                },
+                {
+                    "_id": 1,
+                    "items": 1,
+                    "created_at": 1
+                }
+            ).limit(10).to_list(length=10)
+            
+            expired_carts.extend(carts_without_updated)
+
+            cleaned_count = 0
+            for cart in expired_carts:
+                try:
+                    # Используем существующую функцию для очистки
+                    if await cleanup_expired_cart(db, cart):
+                        cleaned_count += 1
+                except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
+                    # Временные проблемы с подключением - пропускаем эту корзину
+                    pass
+                except Exception as e:
+                    logger.error(f"Ошибка при очистке корзины {cart.get('_id')}: {e}")
+
+            if cleaned_count > 0:
+                logger.info(f"Очищено просроченных корзин: {cleaned_count}")
+
+            # Ждем перед следующей проверкой (реже в production для экономии ресурсов)
+            sleep_time = PRODUCTION_INTERVAL if settings.environment == "production" else DEV_INTERVAL
+            await asyncio.sleep(sleep_time)
+        except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
+            # Временные проблемы с подключением - игнорируем
+            sleep_time = PRODUCTION_INTERVAL if settings.environment == "production" else DEV_INTERVAL
+            await asyncio.sleep(sleep_time)
+        except Exception as e:
+            logger.error(f"Ошибка в фоновой задаче очистки корзин: {e}")
+            sleep_time = PRODUCTION_INTERVAL if settings.environment == "production" else DEV_INTERVAL
+            await asyncio.sleep(sleep_time)
+
+
 async def get_cart_document(db: AsyncIOMotorDatabase, user_id: int, check_expiry: bool = True):
     """Получает документ корзины пользователя."""
     cart = await db.carts.find_one({"user_id": user_id})
@@ -355,45 +445,79 @@ async def update_cart_item(
     current_user: TelegramUser = Depends(get_current_user),
 ):
     """Обновляет количество товара в корзине."""
-    cart = await get_cart_document(db, current_user.id, check_expiry=False)
-    item = next((item for item in cart["items"] if item.get("id") == payload.item_id), None)
+    user_id = current_user.id
+    now = datetime.utcnow()
+    
+    # Получаем только нужные поля корзины для оптимизации
+    cart = await db.carts.find_one(
+        {"user_id": user_id},
+        {"items": 1, "_id": 1}
+    )
+    if not cart:
+        raise HTTPException(status_code=404, detail="Корзина не найдена")
+    
+    # Находим товар в корзине
+    item = next((item for item in cart.get("items", []) if item.get("id") == payload.item_id), None)
     if not item:
         raise HTTPException(status_code=404, detail="Товар не найден в корзине")
 
     old_quantity = item.get("quantity", 0)
     quantity_diff = payload.quantity - old_quantity
+    
+    if quantity_diff == 0:
+        # Количество не изменилось, просто возвращаем корзину
+        cart = await get_cart_document(db, user_id, check_expiry=False)
+        safe_cart = normalize_cart(cart)
+        return Cart(**serialize_doc(safe_cart) | {"id": str(cart["_id"])})
 
-    # Оптимизированная обработка изменения количества
+    # Обработка изменения количества на складе
     if item.get("variant_id") and quantity_diff != 0:
-        try:
-            product = await db.products.find_one({"_id": as_object_id(item["product_id"])}, {"variants": 1})
-            if product:
-                variant = next((v for v in product.get("variants", []) if v.get("id") == item.get("variant_id")), None)
-                if variant:
-                    if quantity_diff > 0:
-                        if variant.get("quantity", 0) < quantity_diff:
-                            raise HTTPException(
-                                status_code=400, detail=f"Недостаточно товара. В наличии: {variant.get('quantity', 0)}"
-                            )
-                        if not await decrement_variant_quantity(
-                            db, item["product_id"], item.get("variant_id"), quantity_diff
-                        ):
-                            raise HTTPException(status_code=400, detail="Недостаточно товара")
-                    else:
-                        await restore_variant_quantity(
-                            db, item["product_id"], item.get("variant_id"), abs(quantity_diff)
+        product = await db.products.find_one(
+            {"_id": as_object_id(item["product_id"])},
+            {"variants": 1}
+        )
+        if product:
+            variant = next((v for v in product.get("variants", []) if v.get("id") == item.get("variant_id")), None)
+            if variant:
+                if quantity_diff > 0:
+                    if variant.get("quantity", 0) < quantity_diff:
+                        raise HTTPException(
+                            status_code=400, detail=f"Недостаточно товара. В наличии: {variant.get('quantity', 0)}"
                         )
-        except (ValueError, HTTPException):
-            raise
-        except Exception:
-            pass  # Игнорируем остальные ошибки
+                    if not await decrement_variant_quantity(
+                        db, item["product_id"], item.get("variant_id"), quantity_diff
+                    ):
+                        raise HTTPException(status_code=400, detail="Недостаточно товара")
+                else:
+                    await restore_variant_quantity(
+                        db, item["product_id"], item.get("variant_id"), abs(quantity_diff)
+                    )
 
-    item["quantity"] = payload.quantity
-    cart["updated_at"] = datetime.utcnow()
-    cart = recalculate_total(cart)
-    await db.carts.update_one({"_id": cart["_id"]}, {"$set": cart})
-    safe_cart = normalize_cart(cart)
-    return Cart(**serialize_doc(safe_cart) | {"id": str(cart["_id"])})
+    # Вычисляем изменение total_amount
+    price = item.get("price", 0)
+    price_delta = price * quantity_diff
+
+    # Атомарное обновление корзины с пересчетом total_amount в MongoDB
+    final_cart = await db.carts.find_one_and_update(
+        {
+            "_id": cart["_id"],
+            "items.id": payload.item_id
+        },
+        {
+            "$set": {"items.$.quantity": payload.quantity, "updated_at": now},
+            "$inc": {"total_amount": price_delta}
+        },
+        return_document=True
+    )
+    
+    if not final_cart:
+        # Если обновление не удалось, возвращаем товар на склад
+        if item.get("variant_id") and quantity_diff > 0:
+            await restore_variant_quantity(db, item["product_id"], item.get("variant_id"), quantity_diff)
+        raise HTTPException(status_code=500, detail="Ошибка при обновлении корзины")
+
+    safe_cart = normalize_cart(final_cart)
+    return Cart(**serialize_doc(safe_cart) | {"id": str(final_cart["_id"])})
 
 
 @router.delete("/cart/item", response_model=Cart)
@@ -403,23 +527,49 @@ async def remove_from_cart(
     current_user: TelegramUser = Depends(get_current_user),
 ):
     """Удаляет товар из корзины."""
-    cart = await get_cart_document(db, current_user.id, check_expiry=False)
-    item_to_remove = next((item for item in cart["items"] if item["id"] == payload.item_id), None)
+    user_id = current_user.id
+    now = datetime.utcnow()
+    
+    # Получаем только нужные поля корзины для оптимизации
+    cart = await db.carts.find_one(
+        {"user_id": user_id},
+        {"items": 1, "_id": 1}
+    )
+    if not cart:
+        raise HTTPException(status_code=404, detail="Корзина не найдена")
+    
+    # Находим товар для удаления
+    item_to_remove = next((item for item in cart.get("items", []) if item.get("id") == payload.item_id), None)
     if not item_to_remove:
         raise HTTPException(status_code=404, detail="Товар не найден в корзине")
+
+    # Вычисляем сумму удаляемого товара для пересчета total_amount
+    price = item_to_remove.get("price", 0)
+    quantity = item_to_remove.get("quantity", 0)
+    price_delta = -(price * quantity)
 
     # Возвращаем товар на склад при удалении из корзины
     if item_to_remove.get("variant_id"):
         await restore_variant_quantity(
-            db, item_to_remove["product_id"], item_to_remove.get("variant_id"), item_to_remove.get("quantity", 0)
+            db, item_to_remove["product_id"], item_to_remove.get("variant_id"), quantity
         )
 
-    cart["items"] = [item for item in cart["items"] if item["id"] != payload.item_id]
-    cart["updated_at"] = datetime.utcnow()
-    cart = recalculate_total(cart)
-    await db.carts.update_one({"_id": cart["_id"]}, {"$set": cart})
-    safe_cart = normalize_cart(cart)
-    return Cart(**serialize_doc(safe_cart) | {"id": str(cart["_id"])})
+    # Атомарное удаление товара из корзины с пересчетом total_amount в MongoDB
+    final_cart = await db.carts.find_one_and_update(
+        {"_id": cart["_id"]},
+        {
+            "$pull": {"items": {"id": payload.item_id}},
+            "$inc": {"total_amount": price_delta},
+            "$set": {"updated_at": now}
+        },
+        return_document=True
+    )
+    
+    if not final_cart:
+        raise HTTPException(status_code=500, detail="Ошибка при удалении товара из корзины")
+
+    safe_cart = normalize_cart(final_cart)
+    return Cart(**serialize_doc(safe_cart) | {"id": str(final_cart["_id"])})
 
 
 @router.delete("/cart", response_model=Cart)

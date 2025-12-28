@@ -153,20 +153,24 @@ async def create_order(
 
     # Оптимизированная проверка доступности (только для товаров с variant_id)
     if cart.items:
-        check_tasks = [
-            db.products.find_one({"_id": as_object_id(item.product_id)}, {"variants": 1})
-            for item in cart.items
-            if item.variant_id
-        ]
-        if check_tasks:
+        # Сохраняем список items с variant_id один раз для переиспользования
+        items_with_variants = [item for item in cart.items if item.variant_id]
+        if items_with_variants:
+            check_tasks = [
+                db.products.find_one({"_id": as_object_id(item.product_id)}, {"variants": 1})
+                for item in items_with_variants
+            ]
             products = await asyncio.gather(*check_tasks, return_exceptions=True)
-            for product, item in zip(products, [item for item in cart.items if item.variant_id]):
+            for product, item in zip(products, items_with_variants):
                 if isinstance(product, dict):
                     variant = next((v for v in product.get("variants", []) if v.get("id") == item.variant_id), None)
                     if variant and variant.get("quantity", 0) < 0:
                         raise HTTPException(status_code=400, detail=f"Товар '{item.product_name}' больше не доступен")
 
     receipt_file_id, original_filename = await _save_payment_receipt(db, payment_receipt)
+
+    # Преобразуем items один раз для переиспользования
+    items_dict = [item.dict() for item in cart.items]
 
     order_doc = {
         "user_id": user_id,
@@ -175,7 +179,7 @@ async def create_order(
         "delivery_address": address,
         "comment": comment,
         "status": OrderStatus.ACCEPTED.value,
-        "items": [item.dict() for item in cart.items],  # Преобразуем CartItem объекты в словари
+        "items": items_dict,
         "total_amount": cart.total_amount,
         "can_edit_address": False,  # Адрес нельзя редактировать после создания
         "created_at": datetime.utcnow(),
@@ -198,12 +202,14 @@ async def create_order(
             pass
         raise
 
-    # Удаляем корзину и получаем заказ параллельно
-    cart_delete_task = db.carts.delete_one({"_id": as_object_id(cart.id)})
-    order_doc_task = db.orders.find_one({"_id": result.inserted_id})
-    await cart_delete_task  # Ждем только удаление корзины
-    doc = await order_doc_task
-    order = Order(**serialize_doc(doc) | {"id": str(doc["_id"])})
+    # Добавляем _id к order_doc для создания ответа без дополнительного запроса к БД
+    order_doc["_id"] = result.inserted_id
+    
+    # Удаляем корзину в фоне (не ждем завершения для ускорения ответа)
+    asyncio.create_task(db.carts.delete_one({"_id": as_object_id(cart.id)}))
+    
+    # Создаем объект Order из order_doc без дополнительного запроса к БД
+    order = Order(**serialize_doc(order_doc) | {"id": str(result.inserted_id)})
 
     # Отправляем уведомление администраторам в фоновом режиме для скорости
     background_tasks.add_task(
@@ -213,7 +219,7 @@ async def create_order(
         customer_phone=phone,
         delivery_address=address,
         total_amount=cart.total_amount,
-        items=[item.dict() for item in cart.items],
+        items=items_dict,  # Используем уже преобразованные данные
         user_id=user_id,
         receipt_file_id=receipt_file_id,
         db=db,
