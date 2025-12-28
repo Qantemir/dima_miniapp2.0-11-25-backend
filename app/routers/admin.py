@@ -27,7 +27,6 @@ from ..utils import (
     as_object_id,
     get_gridfs,
     mark_order_as_deleted,
-    restore_order_entry,
     restore_variant_quantity,
     serialize_doc,
 )
@@ -282,43 +281,6 @@ async def quick_accept_order(
 
             logger = logging.getLogger(__name__)
             logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
-
-    return Order(**serialize_doc(updated) | {"id": str(updated["_id"])})
-
-
-@router.post("/admin/order/{order_id}/restore", response_model=Order)
-async def restore_order(
-    order_id: str,
-    db: AsyncIOMotorDatabase = Depends(get_db),
-    _admin_id: int = Depends(verify_admin),
-):
-    """Восстанавливает удаленный заказ в течение 10 минут после завершения."""
-    from datetime import datetime, timedelta
-
-    order_oid = as_object_id(order_id)
-    doc = await db.orders.find_one({"_id": order_oid})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
-
-    deleted_at = doc.get("deleted_at")
-    if not deleted_at:
-        raise HTTPException(status_code=400, detail="Заказ не был удален")
-
-    # Проверяем, что прошло не более 10 минут
-    if isinstance(deleted_at, datetime):
-        time_diff = datetime.utcnow() - deleted_at
-        if time_diff > timedelta(minutes=10):
-            raise HTTPException(status_code=400, detail="Время восстановления истекло. Заказ был окончательно удален.")
-
-    # Восстанавливаем заказ
-    restored = await restore_order_entry(db, order_oid)
-    if not restored:
-        raise HTTPException(status_code=400, detail="Не удалось восстановить заказ")
-
-    # Получаем обновленный документ
-    updated = await db.orders.find_one({"_id": order_oid})
-    if not updated:
-        raise HTTPException(status_code=404, detail="Заказ не найден после восстановления")
 
     return Order(**serialize_doc(updated) | {"id": str(updated["_id"])})
 
