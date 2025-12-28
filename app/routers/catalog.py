@@ -972,17 +972,23 @@ async def get_product_image(
         filename = grid_file.filename or "product-image"
         content_type = grid_file.content_type or "image/jpeg"
 
-        return Response(
+        # Создаем Response с CORS заголовками
+        response = Response(
             content=file_data,
             media_type=content_type,
             headers={
                 "Content-Disposition": f'inline; filename="{filename}"',
                 "Cache-Control": "public, max-age=31536000",  # Кешируем на 1 год
-                "Access-Control-Allow-Origin": "*",  # Явные CORS заголовки для изображений
-                "Access-Control-Allow-Methods": "GET, OPTIONS",
-                "Access-Control-Allow-Headers": "*",
             },
         )
+        
+        # Явно добавляем CORS заголовки для изображений
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Expose-Headers"] = "*"
+        
+        return response
     except Exception as e:
         logger.error(f"Ошибка при загрузке изображения продукта {file_id}: {e}")
         raise HTTPException(status_code=404, detail=f"Изображение не найдено: {str(e)}")
