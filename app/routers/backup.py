@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, Form, status
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -262,7 +262,7 @@ async def export_database(
 @router.post("/admin/backup/import")
 async def import_database(
     file: UploadFile = File(...),
-    clear_existing: bool = False,
+    clear_existing: bool = Form(False),
     db: AsyncIOMotorDatabase = Depends(get_db),
     _backup_user_id: int = Depends(verify_backup_user),
 ):
