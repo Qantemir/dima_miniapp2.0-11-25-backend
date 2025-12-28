@@ -284,6 +284,8 @@ async def import_database(
             detail="База данных недоступна"
         )
     
+    logger.info(f"Начало импорта бэкапа. clear_existing={clear_existing}, filename={file.filename}")
+    
     # Проверяем тип файла
     if not file.filename.endswith((".json", ".json.gz", ".gz")):
         raise HTTPException(
