@@ -47,7 +47,6 @@ class Settings(BaseSettings):
     # BaseSettings автоматически загружает переменные окружения по имени поля (case-insensitive)
     # Но для надежности также проверяем ADMIN_IDS в валидаторе
     admin_ids: List[int] = Field(default_factory=list)
-    backup_user_ids: List[int] = Field(default_factory=list, env="BACKUP_USER_IDS")
 
     @property
     def admin_ids_set(self) -> set[int]:
@@ -56,12 +55,6 @@ class Settings(BaseSettings):
             self._admin_ids_set_cache = set(self.admin_ids) if self.admin_ids else set()
         return self._admin_ids_set_cache
 
-    @property
-    def backup_user_ids_set(self) -> set[int]:
-        """Кэшированный set для быстрой проверки в verify_backup_user."""
-        if not hasattr(self, "_backup_user_ids_set_cache"):
-            self._backup_user_ids_set_cache = set(self.backup_user_ids) if self.backup_user_ids else set()
-        return self._backup_user_ids_set_cache
 
     telegram_bot_token: str | None = Field(None, env="TELEGRAM_BOT_TOKEN")
     # Значения по умолчанию, можно переопределить через env при необходимости
@@ -116,7 +109,7 @@ class Settings(BaseSettings):
     @classmethod
     def parse_id_fields_before(cls, data: Any) -> Any:
         """
-        Обрабатывает поля admin_ids и backup_user_ids до создания модели.
+        Обрабатывает поля admin_ids до создания модели.
         Это предотвращает попытку JSON парсинга pydantic-settings.
         """
         if isinstance(data, dict):
@@ -127,12 +120,6 @@ class Settings(BaseSettings):
                 data["admin_ids"] = _parse_id_list(data["ADMIN_IDS"])
                 del data["ADMIN_IDS"]
             
-            # Обрабатываем backup_user_ids
-            if "backup_user_ids" in data:
-                data["backup_user_ids"] = _parse_id_list(data["backup_user_ids"])
-            if "BACKUP_USER_IDS" in data:
-                data["backup_user_ids"] = _parse_id_list(data["BACKUP_USER_IDS"])
-                del data["BACKUP_USER_IDS"]
         
         return data
 
@@ -155,23 +142,6 @@ class Settings(BaseSettings):
                                 pass
                     if ids:
                         self.admin_ids = ids
-        
-        # Загружаем BACKUP_USER_IDS
-        if not self.backup_user_ids:
-            env_value = os.getenv("BACKUP_USER_IDS")
-            if env_value:
-                str_value = env_value.strip()
-                if str_value:
-                    ids = []
-                    for v in str_value.split(","):
-                        v = v.strip()
-                        if v:
-                            try:
-                                ids.append(int(v))
-                            except ValueError:
-                                pass
-                    if ids:
-                        self.backup_user_ids = ids
         
         # Загружаем критические строковые переменные, если они не загрузились
         # (BaseSettings должен загружать их автоматически, но для надежности проверяем)
