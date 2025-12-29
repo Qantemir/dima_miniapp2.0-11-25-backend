@@ -327,7 +327,10 @@ async def add_to_cart(
 
     variant_name = variant.get("name")
     variant_price = product.get("price", 0)
-    variant_quantity = variant.get("quantity", 0)
+    try:
+        variant_quantity = int(variant.get("quantity", 0))
+    except Exception:
+        variant_quantity = 0
 
     # Используем атомарные операции MongoDB для обновления корзины и списания товара
     now = datetime.utcnow()
@@ -474,10 +477,15 @@ async def update_cart_item(
         if product:
             variant = next((v for v in product.get("variants", []) if v.get("id") == item.get("variant_id")), None)
             if variant:
+                try:
+                    variant_quantity = int(variant.get("quantity", 0))
+                except Exception:
+                    variant_quantity = 0
+
                 if quantity_diff > 0:
-                    if variant.get("quantity", 0) < quantity_diff:
+                    if variant_quantity < quantity_diff:
                         raise HTTPException(
-                            status_code=400, detail=f"Недостаточно товара. В наличии: {variant.get('quantity', 0)}"
+                            status_code=400, detail=f"Недостаточно товара. В наличии: {variant_quantity}"
                         )
                     if not await decrement_variant_quantity(
                         db, item["product_id"], item.get("variant_id"), quantity_diff

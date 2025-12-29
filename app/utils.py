@@ -179,58 +179,62 @@ async def decrement_variant_quantity(
     """
     try:
         product_oid = as_object_id(product_id)
-        
         # Сначала получаем текущее состояние товара для проверки количества после списания
         product = await db.products.find_one(
             {"_id": product_oid, "variants.id": variant_id},
             {"variants": 1, "available": 1}
         )
-        
+
         if not product:
             return False
-        
+
         # Находим вариант и проверяем, достаточно ли товара
         variant = next((v for v in product.get("variants", []) if v.get("id") == variant_id), None)
         if not variant:
             return False
-        
-        current_quantity = variant.get("quantity", 0)
+
+        try:
+            current_quantity = int(variant.get("quantity", 0))
+        except Exception:
+            current_quantity = 0
+
         if current_quantity < quantity:
             return False
-        
-        # Уменьшаем количество варианта
+
+        new_quantity = current_quantity - quantity
+
+        # Уменьшаем количество варианта (без фильтра по типу, чтобы сработало при хранении строки)
         result = await db.products.update_one(
             {
                 "_id": product_oid,
                 "variants.id": variant_id,
-                "variants.quantity": {"$gte": quantity}
             },
             {
-                "$inc": {"variants.$.quantity": -quantity}
+                "$set": {"variants.$.quantity": new_quantity}
             }
         )
-        
+
         if result.modified_count == 0:
             return False
-        
+
         # Получаем обновленный товар со всеми вариантами для проверки доступности
         updated_product = await db.products.find_one(
             {"_id": product_oid},
             {"variants": 1}
         )
-        
+
         if updated_product:
             variants = updated_product.get("variants", [])
             # Проверяем, есть ли хотя бы один вариант с quantity > 0
-            has_available_variant = any(v.get("quantity", 0) > 0 for v in variants)
-            
+            has_available_variant = any((v.get("quantity", 0) or 0) > 0 for v in variants)
+
             # Если все варианты закончились, устанавливаем available = false
             if not has_available_variant:
                 await db.products.update_one(
                     {"_id": product_oid},
                     {"$set": {"available": False}}
                 )
-        
+
         return True
     except Exception as e:
         logger.error(f"Ошибка при уменьшении количества варианта: {e}")
@@ -275,6 +279,13 @@ async def restore_variant_quantity(
         current_quantity = variant.get("quantity", 0)
         was_unavailable = current_quantity <= 0
         
+        try:
+            numeric_current = int(current_quantity)
+        except Exception:
+            numeric_current = 0
+
+        new_quantity = numeric_current + quantity
+
         # Восстанавливаем количество варианта
         await db.products.update_one(
             {
@@ -282,20 +293,17 @@ async def restore_variant_quantity(
                 "variants.id": variant_id
             },
             {
-                "$inc": {"variants.$.quantity": quantity}
+                "$set": {"variants.$.quantity": new_quantity}
             }
         )
-        
+
         # Если товар был недоступен (quantity <= 0) и теперь стал доступен (quantity > 0),
         # устанавливаем available = true
-        if was_unavailable:
-            new_quantity = current_quantity + quantity
-            if new_quantity > 0:
-                # Товар снова стал доступным - устанавливаем available = true
-                await db.products.update_one(
-                    {"_id": product_oid},
-                    {"$set": {"available": True}}
-                )
+        if was_unavailable and new_quantity > 0:
+            await db.products.update_one(
+                {"_id": product_oid},
+                {"$set": {"available": True}}
+            )
     except Exception as e:
         logger.error(f"Ошибка при восстановлении количества варианта: {e}")
 
