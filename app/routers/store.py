@@ -98,6 +98,22 @@ async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cac
             if use_cache:
                 _update_cache(status_doc)
             return status_doc
+        
+        # Очищаем старые неиспользуемые поля при чтении (если они есть)
+        if "payment_link" in doc or "sleep_until" in doc:
+            await db.store_status.update_one(
+                {"_id": doc["_id"]},
+                {
+                    "$unset": {
+                        "payment_link": "",
+                        "sleep_until": "",
+                    }
+                }
+            )
+            # Удаляем поля из документа в памяти
+            doc.pop("payment_link", None)
+            doc.pop("sleep_until", None)
+        
         # Логика автоматического пробуждения и payment_link убрана
 
         # Обновляем кеш (Redis + in-memory)
@@ -243,6 +259,10 @@ async def toggle_store_sleep(
                 "is_sleep_mode": payload.sleep,
                 "sleep_message": payload.message,
                 "updated_at": datetime.utcnow(),
+            },
+            "$unset": {
+                "payment_link": "",  # Удаляем старое поле, если оно есть
+                "sleep_until": "",   # Удаляем старое поле, если оно есть
             }
         },
     )
