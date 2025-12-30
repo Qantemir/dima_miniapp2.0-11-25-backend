@@ -82,7 +82,7 @@ async def setup_webhook(request: Request):
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 f"https://api.telegram.org/bot{settings.telegram_bot_token}/setWebhook",
-                json={"url": webhook_url, "allowed_updates": ["callback_query"]},  # Только callback queries
+                json={"url": webhook_url, "allowed_updates": ["callback_query", "message"]},  # Callback queries и сообщения
             )
             result = response.json()
             if result.get("ok"):
@@ -103,9 +103,20 @@ async def handle_bot_webhook(
     request: Request,
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
-    """Обрабатывает webhook от Telegram Bot API (callback от inline-кнопок)."""
+    """Обрабатывает webhook от Telegram Bot API (callback от inline-кнопок и команды)."""
     try:
         data = await request.json()
+
+        # Обрабатываем команду /start
+        if isinstance(data, dict) and "message" in data:
+            message = data["message"]
+            text = message.get("text", "").strip()
+            chat_id = message.get("chat", {}).get("id")
+            user_id = message.get("from", {}).get("id")
+            
+            if text == "/start" and chat_id and user_id:
+                await _handle_start_command(chat_id, user_id)
+                return {"ok": True}
 
         # Проверяем, что это callback query
         if not isinstance(data, dict) or "callback_query" not in data:
@@ -426,3 +437,39 @@ async def _edit_message_reply_markup(bot_token: str, chat_id: int, message_id: i
             await client.post(f"https://api.telegram.org/bot{bot_token}/editMessageReplyMarkup", json=data)
     except Exception as e:
         logger.error(f"Ошибка при обновлении сообщения: {e}")
+
+
+async def _handle_start_command(chat_id: int, user_id: int):
+    """Обрабатывает команду /start и отправляет приветственное сообщение."""
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        logger.error("TELEGRAM_BOT_TOKEN not set, cannot send start message")
+        return False
+
+    welcome_message = (
+        "👋 Добро пожаловать!\n\n"
+        "Это мини-приложение для заказа товаров. "
+        "Чтобы начать покупки, перейдите в мини-приложение ниже ⬇️\n\n"
+        "Там вы сможете просмотреть каталог, добавить товары в корзину и оформить заказ."
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": welcome_message,
+                    "parse_mode": "HTML",
+                },
+            )
+            result = response.json()
+            if result.get("ok"):
+                logger.info(f"Start command handled for user {user_id}")
+                return True
+            else:
+                logger.error(f"Failed to send start message: {result.get('description', 'Unknown error')}")
+                return False
+    except Exception as e:
+        logger.error(f"Ошибка при отправке приветственного сообщения: {e}")
+        return False

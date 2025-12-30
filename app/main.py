@@ -452,7 +452,7 @@ async def startup():
                 # Устанавливаем новый webhook
                 response = await client.post(
                     f"https://api.telegram.org/bot{settings.telegram_bot_token}/setWebhook",
-                    json={"url": webhook_url, "allowed_updates": ["callback_query"]},  # Только callback queries
+                    json={"url": webhook_url, "allowed_updates": ["callback_query", "message"]},  # Callback queries и сообщения
                 )
                 result = response.json()
                 if not result.get("ok"):
