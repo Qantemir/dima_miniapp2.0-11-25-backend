@@ -24,7 +24,7 @@ from .config import settings, ENV_PATH
 from .database import close_mongo_connection, connect_to_mongo, get_db
 from .routers import admin, bot_webhook, cart, catalog, orders, store
 from .routers.cart import cleanup_expired_carts_periodic
-from .schemas import CatalogResponse, StoreStatus
+from .schemas import CatalogResponse, OrderStatus, StoreStatus
 from .utils import permanently_delete_order_entry
 
 app = FastAPI(title="Mini Shop Telegram Backend", version="1.0.0")
@@ -369,42 +369,121 @@ async def apply_security_and_cache_headers(request, call_next):
     return response
 
 
-async def cleanup_deleted_orders():
+async def cleanup_orders():
     """
-    Фоновая задача для окончательного удаления заказов.
-
-    Удаляет заказы, которые были помечены как удаленные более 10 минут назад.
+    Фоновая задача для автоматического удаления заказов.
+    
+    Выполняется раз в день в 3:00 ночи (UTC) и удаляет:
+    1. Заказы, помеченные администратором как удаленные (с полем deleted_at)
+    2. Выполненные/отмененные заказы, обновленные более суток назад
     """
     logger = logging.getLogger(__name__)
 
     while True:
         try:
+            # Вычисляем время до следующего запуска (3:00 ночи UTC)
+            now = datetime.utcnow()
+            # Время следующего запуска: сегодня в 3:00, или завтра в 3:00 если уже прошло
+            next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+            if next_run <= now:
+                # Если уже прошло 3:00 сегодня, запускаем завтра
+                next_run += timedelta(days=1)
+            
+            # Вычисляем секунды до следующего запуска
+            seconds_until_next = (next_run - now).total_seconds()
+            
+            logger.info(f"Следующая очистка заказов запланирована на {next_run.strftime('%Y-%m-%d %H:%M:%S')} UTC (через {seconds_until_next/3600:.1f} часов)")
+            
+            # Ждем до времени запуска
+            await asyncio.sleep(seconds_until_next)
+
             # Получаем базу данных
             db = await get_db()
+            if db is None:
+                logger.warning("База данных недоступна, пропускаем очистку заказов")
+                continue
 
-            # Находим заказы, удаленные более 10 минут назад
-            cutoff_time = datetime.utcnow() - timedelta(minutes=10)
-            deleted_orders = await db.orders.find({"deleted_at": {"$exists": True, "$lte": cutoff_time}}).to_list(
-                length=100
-            )
+            logger.info("Начало автоматической очистки заказов")
+            total_deleted = 0
+            batch_size = 100
 
-            for order_doc in deleted_orders:
-                try:
-                    await permanently_delete_order_entry(db, order_doc)
-                except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
-                    # Временные проблемы с подключением - игнорируем
-                    pass
-                except Exception as e:
-                    logger.error(f"Ошибка при окончательном удалении заказа {order_doc.get('_id')}: {e}")
+            # 1. Удаляем заказы, помеченные администратором как удаленные
+            # (любые заказы с deleted_at, независимо от статуса)
+            deleted_orders_query = {
+                "deleted_at": {"$exists": True}
+            }
+            
+            deleted_by_admin_count = 0
+            while True:
+                deleted_orders = await db.orders.find(deleted_orders_query).limit(batch_size).to_list(length=batch_size)
+                
+                if not deleted_orders:
+                    break
+                
+                for order_doc in deleted_orders:
+                    try:
+                        await permanently_delete_order_entry(db, order_doc)
+                        deleted_by_admin_count += 1
+                        total_deleted += 1
+                    except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
+                        logger.warning("Проблемы с подключением к БД, прерываем обработку батча")
+                        break
+                    except Exception as e:
+                        logger.error(f"Ошибка при удалении заказа, помеченного администратором {order_doc.get('_id')}: {e}")
 
-            # Ждем перед следующей проверкой (5 минут для экономии ресурсов)
-            await asyncio.sleep(300)
+            # 2. Удаляем выполненные/отмененные заказы, обновленные более суток назад
+            # (только те, которые НЕ помечены как удаленные администратором)
+            cutoff_time = datetime.utcnow() - timedelta(days=1)
+            
+            completed_orders_query = {
+                "status": {"$in": [OrderStatus.ACCEPTED.value, OrderStatus.REJECTED.value]},
+                "updated_at": {"$exists": True, "$lte": cutoff_time},
+                "deleted_at": {"$exists": False},  # Не удаленные вручную
+            }
+            
+            completed_orders_count = 0
+            while True:
+                completed_orders = await db.orders.find(completed_orders_query).limit(batch_size).to_list(length=batch_size)
+                
+                if not completed_orders:
+                    break
+                
+                for order_doc in completed_orders:
+                    try:
+                        order_id = str(order_doc.get("_id"))
+                        # Дополнительная проверка: убеждаемся, что updated_at существует и не None
+                        updated_at = order_doc.get("updated_at")
+                        if updated_at is None:
+                            logger.warning(f"Заказ {order_id} не имеет поля updated_at, пропускаем")
+                            continue
+                        
+                        await permanently_delete_order_entry(db, order_doc)
+                        completed_orders_count += 1
+                        total_deleted += 1
+                    except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
+                        logger.warning("Проблемы с подключением к БД, прерываем обработку батча")
+                        break
+                    except Exception as e:
+                        logger.error(f"Ошибка при удалении выполненного/отмененного заказа {order_doc.get('_id')}: {e}")
+
+            # Логируем результаты
+            if total_deleted > 0:
+                logger.info(
+                    f"Автоматически удалено {total_deleted} заказов: "
+                    f"{deleted_by_admin_count} помеченных администратором, "
+                    f"{completed_orders_count} выполненных/отмененных"
+                )
+            else:
+                logger.info("Заказов для удаления не найдено")
+
         except (AutoReconnect, NetworkTimeout, ServerSelectionTimeoutError):
-            # Временные проблемы с подключением - игнорируем
-            await asyncio.sleep(300)
+            # Временные проблемы с подключением - ждем час и пробуем снова
+            logger.warning("Проблемы с подключением к БД, повторим попытку через час")
+            await asyncio.sleep(3600)
         except Exception as e:
-            logger.error(f"Ошибка в фоновой задаче очистки заказов: {e}")
-            await asyncio.sleep(300)
+            logger.error(f"Ошибка в фоновой задаче очистки заказов: {e}", exc_info=True)
+            # При ошибке ждем час перед следующей попыткой
+            await asyncio.sleep(3600)
 
 
 @app.on_event("startup")
@@ -424,8 +503,8 @@ async def startup():
     # Подключаемся к Redis при старте
     await get_redis()
 
-    # Запускаем фоновую задачу для очистки удаленных заказов
-    asyncio.create_task(cleanup_deleted_orders())
+    # Запускаем фоновую задачу для автоматической очистки заказов (раз в день)
+    asyncio.create_task(cleanup_orders())
 
     # Запускаем фоновую задачу для очистки просроченных корзин
     asyncio.create_task(cleanup_expired_carts_periodic())
