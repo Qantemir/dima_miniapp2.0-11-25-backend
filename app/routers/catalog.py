@@ -3,19 +3,16 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from hashlib import sha256
 from typing import List, Optional, Sequence, Tuple
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
 from ..auth import verify_admin
-from ..cache import cache_delete_pattern, cache_get, cache_set, make_cache_key
-from ..config import settings
 from ..database import get_db
 
 # Используем orjson если доступен, иначе fallback на стандартный json
@@ -49,26 +46,6 @@ from ..utils import (
 
 router = APIRouter(tags=["catalog"])
 logger = logging.getLogger(__name__)
-
-
-
-# Раздельные кеши для публичного каталога (only_available=True) и админки (only_available=False)
-_catalog_cache_available: CatalogResponse | None = None
-_catalog_cache_available_etag: str | None = None
-_catalog_cache_available_expiration: datetime | None = None
-_catalog_cache_available_version: str | None = None
-
-_catalog_cache_all: CatalogResponse | None = None
-_catalog_cache_all_etag: str | None = None
-_catalog_cache_all_expiration: datetime | None = None
-_catalog_cache_all_version: str | None = None
-
-_catalog_cache_lock = asyncio.Lock()
-_CATALOG_CACHE_STATE_ID = "catalog_cache_state"
-# Кеш версии в памяти для избежания лишних запросов к БД
-_cache_version_in_memory: str | None = None
-_cache_version_expiration: datetime | None = None
-_CACHE_VERSION_TTL_SECONDS = 10  # Версия кешируется на 10 секунд
 
 
 async def _load_catalog_from_db(db: AsyncIOMotorDatabase, only_available: bool = True) -> CatalogResponse:
@@ -179,255 +156,29 @@ def _compute_catalog_etag(payload: CatalogResponse) -> str:
     return sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def _generate_cache_version() -> str:
-    return str(ObjectId())
-
-
 def _empty_catalog() -> CatalogResponse:
     """Создает пустой каталог для fallback ответов."""
     return CatalogResponse(categories=[], products=[])
 
 
-async def _get_catalog_cache_version(db: AsyncIOMotorDatabase, use_memory_cache: bool = True) -> str:
-    """
-    Получает версию кеша каталога с опциональным кешированием в памяти.
-
-    Args:
-    db: Подключение к БД
-    use_memory_cache: Использовать ли кеш в памяти (по умолчанию True)
-    """
-    global _cache_version_in_memory, _cache_version_expiration
-
-    # Проверяем кеш в памяти, если он включен
-    if use_memory_cache and _cache_version_in_memory is not None and _cache_version_expiration is not None:
-        if datetime.utcnow() < _cache_version_expiration:
-            return _cache_version_in_memory
-
-    # Загружаем из БД
-    doc = await db.cache_state.find_one({"_id": _CATALOG_CACHE_STATE_ID})
-    if doc and doc.get("version"):
-        version = doc["version"]
-        # Обновляем кеш в памяти
-        if use_memory_cache:
-            _cache_version_in_memory = version
-            _cache_version_expiration = datetime.utcnow() + timedelta(seconds=_CACHE_VERSION_TTL_SECONDS)
-        return version
-
-    # Создаем новую версию
-    version = _generate_cache_version()
-    await db.cache_state.update_one(
-        {"_id": _CATALOG_CACHE_STATE_ID},
-        {
-            "$set": {
-                "version": version,
-                "updated_at": datetime.utcnow(),
-            }
-        },
-        upsert=True,
-    )
-    # Обновляем кеш в памяти
-    if use_memory_cache:
-        _cache_version_in_memory = version
-        _cache_version_expiration = datetime.utcnow() + timedelta(seconds=_CACHE_VERSION_TTL_SECONDS)
-    return version
-
-
-async def _bump_catalog_cache_version(db: AsyncIOMotorDatabase) -> str:
-    global _cache_version_in_memory, _cache_version_expiration
-    version = _generate_cache_version()
-    await db.cache_state.update_one(
-        {"_id": _CATALOG_CACHE_STATE_ID},
-        {
-            "$set": {
-                "version": version,
-                "updated_at": datetime.utcnow(),
-            }
-        },
-        upsert=True,
-    )
-    # Обновляем кеш в памяти
-    _cache_version_in_memory = version
-    _cache_version_expiration = datetime.utcnow() + timedelta(seconds=_CACHE_VERSION_TTL_SECONDS)
-    return version
-
-
 async def fetch_catalog(
     db: Optional[AsyncIOMotorDatabase],
     *,
-    force_refresh: bool = False,
     only_available: bool = True,
 ) -> Tuple[CatalogResponse, str]:
-    """Загружает каталог из БД или кэша."""
-    global _catalog_cache_available, _catalog_cache_available_etag, _catalog_cache_available_expiration, _catalog_cache_available_version, _catalog_cache_all, _catalog_cache_all_etag, _catalog_cache_all_expiration, _catalog_cache_all_version
-    ttl = 600  # 10 минут
-    now = datetime.utcnow()
-
-    # Выбираем правильный кеш в зависимости от only_available
-    if only_available:
-        cache = _catalog_cache_available
-        cache_etag = _catalog_cache_available_etag
-        cache_expiration = _catalog_cache_available_expiration
-        cache_version = _catalog_cache_available_version
-    else:
-        cache = _catalog_cache_all
-        cache_etag = _catalog_cache_all_etag
-        cache_expiration = _catalog_cache_all_expiration
-        cache_version = _catalog_cache_all_version
-
-    # Если БД недоступна, возвращаем пустой каталог или кеш
+    """Загружает каталог из БД (без кэширования для актуальности данных)."""
+    # Если БД недоступна, возвращаем пустой каталог
     if db is None:
-        if cache is not None and cache_etag is not None:
-            return cache, cache_etag
         return _empty_catalog(), "empty-catalog"
 
-    # Быстрая проверка кеша без запроса к БД
-    # Если кеш валиден и версия в памяти совпадает, возвращаем сразу
-    if (
-        not force_refresh
-        and ttl > 0
-        and cache
-        and cache_etag
-        and cache_expiration
-        and cache_expiration > now
-        and cache_version is not None
-        and _cache_version_in_memory is not None
-        and _cache_version_expiration is not None
-        and now < _cache_version_expiration
-        and cache_version == _cache_version_in_memory
-    ):
-        # Кеш валиден и версия совпадает - возвращаем без запроса к БД
-        return cache, cache_etag
-
-    # Если кеш истек или версия не совпадает, получаем актуальную версию (с кешированием)
+    # Загружаем данные напрямую из БД без кэширования
     try:
-        current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
-    except Exception:
-        if cache is not None and cache_etag is not None:
-            return cache, cache_etag
-        return _empty_catalog(), "error-catalog"
-
-    # Проверяем кеш еще раз после получения версии
-    if (
-        not force_refresh
-        and ttl > 0
-        and cache
-        and cache_etag
-        and cache_expiration
-        and cache_expiration > now
-        and cache_version == current_version
-    ):
-        return cache, cache_etag
-
-    # Кеш истек или версия изменилась - загружаем заново
-    try:
-        async with _catalog_cache_lock:
-            # Двойная проверка после получения lock (возможно, другой поток уже обновил кеш)
-            try:
-                current_version = await _get_catalog_cache_version(db, use_memory_cache=True)
-            except Exception:
-                current_version = cache_version or "unknown"
-
-            now = datetime.utcnow()
-            # Проверяем кеш еще раз после получения lock
-            if only_available:
-                cache = _catalog_cache_available
-                cache_etag = _catalog_cache_available_etag
-                cache_expiration = _catalog_cache_available_expiration
-                cache_version = _catalog_cache_available_version
-            else:
-                cache = _catalog_cache_all
-                cache_etag = _catalog_cache_all_etag
-                cache_expiration = _catalog_cache_all_expiration
-                cache_version = _catalog_cache_all_version
-
-            if (
-                not force_refresh
-                and ttl > 0
-                and cache
-                and cache_etag
-                and cache_expiration
-                and cache_expiration > now
-                and cache_version == current_version
-            ):
-                return cache, cache_etag
-
-            # Загружаем данные из БД
-            try:
-                data = await _load_catalog_from_db(db, only_available=only_available)
-                etag = _compute_catalog_etag(data)
-            except Exception:
-                if cache is not None and cache_etag is not None:
-                    return cache, cache_etag
-                return _empty_catalog(), "error-catalog"
-
-            if ttl > 0:
-                if only_available:
-                    _catalog_cache_available = data
-                    _catalog_cache_available_etag = etag
-                    _catalog_cache_available_expiration = now + timedelta(seconds=ttl)
-                    _catalog_cache_available_version = current_version
-                else:
-                    _catalog_cache_all = data
-                    _catalog_cache_all_etag = etag
-                    _catalog_cache_all_expiration = now + timedelta(seconds=ttl)
-                    _catalog_cache_all_version = current_version
-            else:
-                if only_available:
-                    _catalog_cache_available = None
-                    _catalog_cache_available_etag = None
-                    _catalog_cache_available_expiration = None
-                    _catalog_cache_available_version = None
-                else:
-                    _catalog_cache_all = None
-                    _catalog_cache_all_etag = None
-                    _catalog_cache_all_expiration = None
-                    _catalog_cache_all_version = None
-
-            return data, etag
+        data = await _load_catalog_from_db(db, only_available=only_available)
+        etag = _compute_catalog_etag(data)
+        return data, etag
     except Exception as e:
-        logger.error(f"Критическая ошибка в fetch_catalog: {e}", exc_info=True)
-        # Возвращаем кеш или пустой каталог
-        if cache is not None and cache_etag is not None:
-            return cache, cache_etag
+        logger.error(f"Ошибка при загрузке каталога из БД: {e}", exc_info=True)
         return _empty_catalog(), "error-catalog"
-
-
-async def invalidate_catalog_cache(db: AsyncIOMotorDatabase | None = None):
-    """Инвалидирует кэш каталога."""
-    global _catalog_cache_available, _catalog_cache_available_etag, _catalog_cache_available_expiration, _catalog_cache_available_version, _catalog_cache_all, _catalog_cache_all_etag, _catalog_cache_all_expiration, _catalog_cache_all_version
-    # Инвалидируем оба кеша
-    _catalog_cache_available = None
-    _catalog_cache_available_expiration = None
-    _catalog_cache_available_etag = None
-    _catalog_cache_available_version = None
-    
-    _catalog_cache_all = None
-    _catalog_cache_all_expiration = None
-    _catalog_cache_all_etag = None
-    _catalog_cache_all_version = None
-
-    # Очищаем Redis кэш
-    try:
-        await cache_delete_pattern("catalog:*")
-    except Exception:
-        pass
-
-    if db is not None:
-        # Обновляем версию кеша - это инвалидирует все кеши
-        await _bump_catalog_cache_version(db)
-
-
-async def _refresh_catalog_cache(db: AsyncIOMotorDatabase):
-    """Обновляет оба кеша каталога в фоне."""
-    try:
-        # Обновляем оба кеша параллельно
-        await asyncio.gather(
-            fetch_catalog(db, force_refresh=True, only_available=True),
-            fetch_catalog(db, force_refresh=True, only_available=False),
-            return_exceptions=True,
-        )
-    except Exception:
-        pass
 
 
 def _build_catalog_response(catalog: CatalogResponse, etag: str) -> Response:
@@ -476,62 +227,20 @@ async def get_catalog(
     db: Optional[AsyncIOMotorDatabase] = Depends(get_db),
     if_none_match: str | None = Header(None, alias="If-None-Match"),
 ):
-    """Возвращает каталог товаров с поддержкой кэширования и ETag."""
+    """Возвращает каталог товаров (прямой запрос к БД без кэширования для актуальности данных)."""
     try:
-        # Проверяем Redis кэш сначала
-        cache_key = make_cache_key("catalog", only_available=True)
-        cached_data = await cache_get(cache_key)
+        # Загружаем каталог напрямую из БД без кэширования
+        catalog, etag = await fetch_catalog(db, only_available=True)
 
-        if cached_data:
-            # Оптимизированная обработка кэша без лишних проверок
-            try:
-                if HAS_ORJSON:
-                    catalog_dict = orjson.loads(cached_data)
-                else:
-                    data_str = cached_data.decode("utf-8") if isinstance(cached_data, bytes) else cached_data
-                    catalog_dict = orjson.loads(data_str)
-                catalog = CatalogResponse(**catalog_dict)
-                # Получаем etag из отдельного ключа
-                cached_etag = await cache_get(f"{cache_key}:etag")
-                if cached_etag:
-                    etag = cached_etag.decode("utf-8")
-                    if if_none_match and if_none_match == etag:
-                        return _build_not_modified_response(etag)
-                    return _build_catalog_response(catalog, etag)
-            except Exception:
-                # Пропускаем ошибки кэша без логирования для скорости
-                pass
-
-        # Если нет в Redis, используем стандартный кэш
-        try:
-            catalog, etag = await fetch_catalog(db)
-
-            # Сохраняем в Redis для следующего раза (без блокировки ответа)
-            try:
-                catalog_dict = _catalog_to_dict(catalog)
-                if HAS_ORJSON:
-                    catalog_bytes = orjson.dumps(catalog_dict, option=orjson.OPT_SERIALIZE_NUMPY)
-                else:
-                    catalog_bytes = orjson.dumps(catalog_dict).encode("utf-8")
-                # Сохраняем асинхронно без ожидания для максимальной скорости ответа
-                asyncio.create_task(cache_set(cache_key, catalog_bytes, ttl=600))  # 10 минут
-                asyncio.create_task(
-                    cache_set(f"{cache_key}:etag", etag.encode("utf-8"), ttl=600)  # 10 минут
-                )
-            except Exception:
-                pass  # Игнорируем ошибки сохранения кэша для скорости
-
-            if if_none_match and if_none_match == etag:
-                return _build_not_modified_response(etag)
-            return _build_catalog_response(catalog, etag)
-        except HTTPException as e:
-            # Если БД недоступна, возвращаем пустой каталог вместо ошибки
-            if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
-                return _build_catalog_response(_empty_catalog(), "empty-catalog")
-            logger.error(f"HTTPException при получении каталога: {e.status_code} - {e.detail}")
-            raise
-        except Exception:
-            return _build_catalog_response(_empty_catalog(), "error-catalog-fallback")
+        if if_none_match and if_none_match == etag:
+            return _build_not_modified_response(etag)
+        return _build_catalog_response(catalog, etag)
+    except HTTPException as e:
+        # Если БД недоступна, возвращаем пустой каталог вместо ошибки
+        if e.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
+            return _build_catalog_response(_empty_catalog(), "empty-catalog")
+        logger.error(f"HTTPException при получении каталога: {e.status_code} - {e.detail}")
+        raise
     except Exception as e:
         logger.error(f"Ошибка при получении каталога: {type(e).__name__}: {e}", exc_info=True)
         # Возвращаем пустой каталог вместо 500, чтобы фронтенд не падал
@@ -544,17 +253,11 @@ async def get_admin_catalog(
     _admin_id: int = Depends(verify_admin),
 ):
     """
-    Возвращает актуальный каталог для админки.
-
-    Использует кеш с проверкой версии - кеш автоматически инвалидируется
-    при любых изменениях каталога, поэтому админка всегда видит актуальные данные,
-    но не загружает их из БД каждый раз, что значительно ускоряет ответ.
+    Возвращает актуальный каталог для админки (прямой запрос к БД без кэширования).
     """
     try:
         # Админка загружает все товары, включая недоступные
-        # НЕ используем force_refresh=True - кеш инвалидируется при изменениях,
-        # поэтому данные всегда актуальны, но загрузка из БД происходит только при необходимости
-        catalog, etag = await fetch_catalog(db, force_refresh=False, only_available=False)
+        catalog, etag = await fetch_catalog(db, only_available=False)
         response = _build_catalog_response(catalog, etag)
         # Админке всегда нужен свежий ответ, поэтому блокируем клиентский кэш.
         response.headers["Cache-Control"] = "no-store, max-age=0"
@@ -658,14 +361,9 @@ async def create_category(
     if not doc:
         raise HTTPException(status_code=500, detail="Ошибка при создании категории")
     
-    # Инвалидируем кэш параллельно с подготовкой ответа
-    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
     serialized = serialize_doc(doc)
     serialized.pop("_id", None)  # Удаляем _id, так как используем id
     category = Category(**serialized | {"id": str(doc["_id"])})
-    # Ждем инвалидации кэша и обновляем его в фоне
-    await cache_task
-    asyncio.create_task(_refresh_catalog_cache(db))
     return category
 
 
@@ -711,14 +409,9 @@ async def update_category(
     if not result:
         raise HTTPException(status_code=404, detail="Категория не найдена")
     
-    # Инвалидируем кэш параллельно с подготовкой ответа
-    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
     serialized = serialize_doc(result)
     serialized.pop("_id", None)  # Удаляем _id, так как используем id
     category = Category(**serialized | {"id": str(result["_id"])})
-    # Ждем инвалидации кэша и обновляем его в фоне
-    await cache_task
-    asyncio.create_task(_refresh_catalog_cache(db))
     return category
 
 
@@ -761,11 +454,6 @@ async def delete_category(
     if delete_result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Категория не найдена")
 
-    # Инвалидируем кэш параллельно с подготовкой ответа
-    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
-    # Ждем инвалидации кэша и обновляем его в фоне
-    await cache_task
-    asyncio.create_task(_refresh_catalog_cache(db))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -824,16 +512,11 @@ async def create_product(
             "_id": 1,
         }
     )
-    # Инвалидируем кэш параллельно с подготовкой ответа
-    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
     # Нормализуем изображения перед сериализацией (на случай если данные уже были в БД)
     normalized_doc = normalize_product_images(doc)
     serialized = serialize_doc(normalized_doc)
     serialized.pop("_id", None)  # Удаляем _id, так как используем id
     product = Product(**serialized | {"id": str(doc["_id"])})
-    # Ждем инвалидации кэша и обновляем его в фоне
-    await cache_task
-    asyncio.create_task(_refresh_catalog_cache(db))
     return product
 
 
@@ -930,16 +613,11 @@ async def update_product(
     if not doc:
         raise HTTPException(status_code=404, detail="Товар не найден")
     
-    # Инвалидируем кэш параллельно с подготовкой ответа
-    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
     # Нормализуем изображения перед сериализацией
     normalized_doc = normalize_product_images(doc)
     serialized = serialize_doc(normalized_doc)
     serialized.pop("_id", None)  # Удаляем _id, так как используем id
     product = Product(**serialized | {"id": str(doc["_id"])})
-    # Ждем инвалидации кэша и обновляем его в фоне
-    await cache_task
-    asyncio.create_task(_refresh_catalog_cache(db))
     return product
 
 
@@ -1023,9 +701,4 @@ async def delete_product(
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Товар не найден")
     
-    # Инвалидируем кэш параллельно с подготовкой ответа
-    cache_task = asyncio.create_task(invalidate_catalog_cache(db))
-    # Ждем инвалидации кэша и обновляем его в фоне
-    await cache_task
-    asyncio.create_task(_refresh_catalog_cache(db))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
