@@ -15,7 +15,7 @@ from ..database import get_db
 from ..notifications import notify_admins_new_order
 from ..schemas import Cart, Order, OrderStatus
 from ..security import TelegramUser, get_current_user
-from ..utils import as_object_id, compress_image_bytes, ensure_store_is_awake, get_gridfs, serialize_doc
+from ..utils import as_object_id, compress_image_bytes, ensure_store_is_awake, get_gridfs, serialize_doc, validate_phone_number
 
 router = APIRouter(tags=["orders"])
 logger = logging.getLogger(__name__)
@@ -147,6 +147,14 @@ async def create_order(
     """Создает новый заказ."""
     user_id = current_user.id
     await ensure_store_is_awake(db)
+    
+    # Валидация номера телефона
+    if not validate_phone_number(phone):
+        raise HTTPException(
+            status_code=400,
+            detail="Некорректный номер телефона. Используйте формат: +7XXXXXXXXXX, 8XXXXXXXXXX или XXXXXXXXXX"
+        )
+    
     cart = await get_cart(db, user_id)
     if not cart:
         raise HTTPException(status_code=400, detail="Корзина пуста")

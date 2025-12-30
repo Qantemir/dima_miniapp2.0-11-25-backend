@@ -163,9 +163,13 @@ async def update_order_status(
     old_status = old_doc.get("status")
     new_status = payload.status.value
 
-    # Валидация: для статуса "отказано" обязательна причина
-    if new_status == OrderStatus.REJECTED.value and not payload.rejection_reason:
-        raise HTTPException(status_code=400, detail="Для статуса 'отказано' необходимо указать причину отказа")
+    # Валидация: для статуса "отказано" обязательна причина (не пустая строка)
+    if new_status == OrderStatus.REJECTED.value:
+        if not payload.rejection_reason or not payload.rejection_reason.strip():
+            raise HTTPException(
+                status_code=400, 
+                detail="Для статуса 'отказано' необходимо указать причину отказа"
+            )
 
     # Если заказ отклоняется, возвращаем товары на склад
     if new_status == OrderStatus.REJECTED.value and old_status != OrderStatus.REJECTED.value:

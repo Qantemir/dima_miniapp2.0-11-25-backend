@@ -14,7 +14,7 @@ from ..security import TelegramUser, get_current_user
 from ..utils import as_object_id, decrement_variant_quantity, normalize_product_images, restore_variant_quantity, serialize_doc
 
 # Время жизни корзины в минутах
-CART_EXPIRY_MINUTES = 30
+CART_EXPIRY_MINUTES = 15
 
 router = APIRouter(tags=["cart"])
 
@@ -316,11 +316,7 @@ async def add_to_cart(
             status_code=400, detail="Товар не может быть продан без вариаций (вкусов). Обратитесь к администратору."
         )
 
-    # Проверяем, что вариация указана
-    if not payload.variant_id:
-        raise HTTPException(status_code=400, detail="Необходимо выбрать вариацию (вкус)")
-
-    # Проверяем вариацию
+    # Проверяем вариацию (variant_id теперь обязателен в схеме, но проверяем существование)
     variant = next((v for v in variants if v.get("id") == payload.variant_id), None)
     if not variant:
         raise HTTPException(status_code=404, detail="Вариация не найдена")

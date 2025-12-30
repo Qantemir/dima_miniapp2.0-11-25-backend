@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,11 +30,38 @@ from .utils import permanently_delete_order_entry
 app = FastAPI(title="Mini Shop Telegram Backend", version="1.0.0")
 
 
+# Обработчик ошибок валидации запросов
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Обрабатывает ошибки валидации запросов."""
+    logger = logging.getLogger(__name__)
+    logger.error(f"Ошибка валидации запроса {request.method} {request.url.path}: {exc.errors()}")
+    logger.error(f"Тело запроса: {await request.body()}")
+    response = JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={"detail": exc.errors(), "body": str(exc.body) if hasattr(exc, 'body') else None}
+    )
+    # Добавляем CORS заголовки для ошибок валидации
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+
 # Глобальный обработчик исключений для 503 ошибок (БД недоступна)
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     """Обрабатывает HTTPException и возвращает fallback значения для критичных эндпоинтов."""
     logger = logging.getLogger(__name__)
+    
+    # Логируем все 400 ошибки для диагностики
+    if exc.status_code == status.HTTP_400_BAD_REQUEST:
+        logger.error(f"400 ошибка на {request.method} {request.url.path}: {exc.detail}")
+        try:
+            body = await request.body()
+            logger.error(f"Тело запроса: {body.decode('utf-8', errors='replace')}")
+        except Exception:
+            pass
 
     if exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE:
         path = request.url.path
@@ -73,8 +101,12 @@ async def http_exception_handler(request: Request, exc: HTTPException):
             response.headers["Content-Encoding"] = "identity"
             return response
 
-    # Для остальных ошибок возвращаем стандартный ответ
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    # Для остальных ошибок возвращаем стандартный ответ с CORS заголовками
+    response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 
 # Глобальный обработчик ВСЕХ исключений для критичных эндпоинтов
@@ -119,8 +151,12 @@ async def global_exception_handler(request: Request, exc: Exception):
         response.headers["Content-Encoding"] = "identity"
         return response
 
-    # Для остальных эндпоинтов возвращаем стандартную ошибку 500
-    return JSONResponse(status_code=500, content={"detail": f"Internal server error: {str(exc)}"})
+    # Для остальных эндпоинтов возвращаем стандартную ошибку 500 с CORS заголовками
+    response = JSONResponse(status_code=500, content={"detail": f"Internal server error: {str(exc)}"})
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 
 class SafeGZipMiddleware(BaseHTTPMiddleware):
@@ -266,12 +302,18 @@ async def apply_security_and_cache_headers(request, call_next):
     """Apply security and cache headers to responses."""
     response = await call_next(request)
 
+    # Убеждаемся, что CORS заголовки присутствуют для всех ответов
+    # Это важно для ошибок, которые могут не проходить через CORSMiddleware
+    if "Access-Control-Allow-Origin" not in response.headers:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+
     # Cache-Control headers для оптимизации
     path = request.url.path
     
-    # Убеждаемся, что CORS заголовки присутствуют для всех ответов, особенно для изображений
+    # Явно добавляем CORS заголовки для изображений продуктов
     if "/product/image/" in path:
-        # Явно добавляем CORS заголовки для изображений продуктов
         response.headers["Access-Control-Allow-Origin"] = "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "*"

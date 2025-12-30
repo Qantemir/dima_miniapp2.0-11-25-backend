@@ -3,6 +3,7 @@
 import base64
 import io
 import logging
+import re
 from typing import List, Optional
 
 from bson import ObjectId
@@ -72,6 +73,49 @@ def as_object_id(value: str | ObjectId) -> ObjectId:
         return ObjectId(value)
     except Exception as e:
         raise ValueError(f"Некорректный ObjectId: {value}") from e
+
+
+def validate_phone_number(phone: str) -> bool:
+    """
+    Валидирует номер телефона.
+    
+    Поддерживает форматы:
+    - +7XXXXXXXXXX (11 цифр после +7)
+    - 8XXXXXXXXXX (11 цифр, начинается с 8)
+    - 7XXXXXXXXXX (11 цифр, начинается с 7)
+    - XXXXXXXXXX (10 цифр)
+    
+    Args:
+        phone: Номер телефона для валидации
+        
+    Returns:
+        True если номер валиден, False в противном случае
+    """
+    if not phone or not isinstance(phone, str):
+        return False
+    
+    # Сохраняем информацию о наличии + в начале
+    has_plus = phone.strip().startswith('+')
+    
+    # Удаляем все пробелы, дефисы, скобки и другие символы
+    cleaned = re.sub(r'[\s\-\(\)\+]', '', phone)
+    
+    # Проверяем, что остались только цифры
+    if not cleaned.isdigit():
+        return False
+    
+    # Проверяем длину и формат
+    if len(cleaned) == 10:
+        # 10 цифр - формат без кода страны
+        return True
+    elif len(cleaned) == 11:
+        # 11 цифр - должен начинаться с 7 или 8
+        # Если был + в начале, то номер должен начинаться с 7
+        if has_plus:
+            return cleaned.startswith('7')
+        return cleaned.startswith(('7', '8'))
+    
+    return False
 
 
 def normalize_product_images(doc: dict) -> dict:

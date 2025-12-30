@@ -161,9 +161,9 @@ class Cart(BaseModel):
 class AddToCartRequest(BaseModel):
     """AddToCartRequest модель."""
 
-    product_id: str
-    variant_id: Optional[str] = None
-    quantity: int = Field(..., ge=1, le=50)
+    product_id: str = Field(..., min_length=1, description="ID товара")
+    variant_id: str = Field(..., min_length=1, description="ID вариации (вкуса) товара")
+    quantity: int = Field(..., ge=1, le=50, description="Количество товара")
 
 
 class RemoveFromCartRequest(BaseModel):
