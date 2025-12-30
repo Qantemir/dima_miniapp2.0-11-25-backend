@@ -106,6 +106,18 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "*"
+    
+    # Для 429 ошибок добавляем заголовок Retry-After
+    if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+        # Извлекаем время ожидания из сообщения или используем значение по умолчанию
+        retry_after = 60  # По умолчанию 60 секунд
+        if "через" in str(exc.detail):
+            import re
+            match = re.search(r'через (\d+)', str(exc.detail))
+            if match:
+                retry_after = int(match.group(1))
+        response.headers["Retry-After"] = str(retry_after)
+    
     return response
 
 
@@ -115,6 +127,29 @@ async def global_exception_handler(request: Request, exc: Exception):
     """Обрабатывает все исключения и возвращает fallback значения для критичных эндпоинтов."""
     logger = logging.getLogger(__name__)
     path = request.url.path
+
+    # Если это HTTPException, обрабатываем его напрямую
+    # Это важно для правильной обработки 429 ошибок из middleware
+    # (HTTPException из middleware может попасть сюда, если не обработался http_exception_handler)
+    if isinstance(exc, HTTPException):
+        # Обрабатываем HTTPException напрямую, чтобы гарантировать правильный статус код
+        response = JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "*"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+        
+        # Для 429 ошибок добавляем заголовок Retry-After
+        if exc.status_code == status.HTTP_429_TOO_MANY_REQUESTS:
+            # Извлекаем время ожидания из сообщения или используем значение по умолчанию
+            retry_after = 60  # По умолчанию 60 секунд
+            if "через" in str(exc.detail):
+                import re
+                match = re.search(r'через (\d+)', str(exc.detail))
+                if match:
+                    retry_after = int(match.group(1))
+            response.headers["Retry-After"] = str(retry_after)
+        
+        return response
 
     # Логируем ошибку
     logger.error(f"Необработанное исключение для {path}: {type(exc).__name__}: {exc}", exc_info=True)
