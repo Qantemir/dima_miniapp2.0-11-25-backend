@@ -99,7 +99,6 @@ docker run -p 8000:8000 --env-file .env backend-api
 ### Настройки магазина
 - `GET /api/store/status` - Статус магазина
 - `PATCH /api/admin/store/sleep` - Установить режим сна
-- `PATCH /api/admin/store/payment-link` - Установить ссылку на оплату
 
 ### Telegram Bot
 - `POST /api/bot/webhook` - Webhook для Telegram

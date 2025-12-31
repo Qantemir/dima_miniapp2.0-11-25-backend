@@ -274,7 +274,6 @@ class StoreStatus(BaseModel):
 
     is_sleep_mode: bool = False
     sleep_message: Optional[str] = None
-    # sleep_until и payment_link убраны, т.к. не используются
 
 
 class StoreSleepRequest(BaseModel):
@@ -285,7 +284,6 @@ class StoreSleepRequest(BaseModel):
     # sleep_until убран, т.к. не используется
 
 
-# PaymentLinkRequest удален, т.к. payment_link больше не используется
 
 
 class OrderSummary(BaseModel):

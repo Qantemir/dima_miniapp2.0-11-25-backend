@@ -100,21 +100,17 @@ async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cac
             return status_doc
         
         # Очищаем старые неиспользуемые поля при чтении (если они есть)
-        if "payment_link" in doc or "sleep_until" in doc:
+        if "sleep_until" in doc:
             await db.store_status.update_one(
                 {"_id": doc["_id"]},
                 {
                     "$unset": {
-                        "payment_link": "",
                         "sleep_until": "",
                     }
                 }
             )
-            # Удаляем поля из документа в памяти
-            doc.pop("payment_link", None)
+            # Удаляем поле из документа в памяти
             doc.pop("sleep_until", None)
-        
-        # Логика автоматического пробуждения и payment_link убрана
 
         # Обновляем кеш (Redis + in-memory)
         if use_cache:
@@ -199,7 +195,7 @@ def _normalize_store_status_doc(doc: dict) -> dict:
             "is_sleep_mode": bool(doc.get("is_sleep_mode", False)),
             "sleep_message": doc.get("sleep_message") if doc.get("sleep_message") else None,
         }
-        # sleep_until и payment_link убраны, т.к. не используются
+        # sleep_until убран, т.к. не используется
         # updated_at убран из ответа API, т.к. не используется на фронтенде
         # но остается в БД для внутренних нужд
 
@@ -261,7 +257,6 @@ async def toggle_store_sleep(
                 "updated_at": datetime.utcnow(),
             },
             "$unset": {
-                "payment_link": "",  # Удаляем старое поле, если оно есть
                 "sleep_until": "",   # Удаляем старое поле, если оно есть
             }
         },
@@ -278,9 +273,4 @@ def _serialize_store_status(model: StoreStatus) -> dict:
     return {
         "is_sleep_mode": model.is_sleep_mode,
         "sleep_message": model.sleep_message,
-        # sleep_until и payment_link убраны, т.к. не используются
     }
-
-
-# Эндпоинт /admin/store/payment-link и функция _ensure_awake_if_needed удалены,
-# т.к. payment_link и sleep_until больше не используются
