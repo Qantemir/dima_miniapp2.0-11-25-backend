@@ -452,19 +452,8 @@ async def _handle_start_command(chat_id: int, user_id: int):
         "🛍️ Широкий ассортимент товаров\n"
         "⚡ Быстрое оформление заказа\n"
         "💳 Удобная оплата онлайн\n"
-        "🚚 Быстрая доставка\n\n"
-        "Нажмите кнопку ниже, чтобы начать покупки! 👇"
+        "🚚 Быстрая доставка"
     )
-
-    # Создаем inline-кнопку для открытия мини-приложения, если есть public_url
-    reply_markup = None
-    if settings.public_url:
-        web_app_url = f"{settings.public_url.rstrip('/')}"
-        reply_markup = {
-            "inline_keyboard": [
-                [{"text": "🛒 Открыть магазин", "web_app": {"url": web_app_url}}],
-            ]
-        }
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -473,9 +462,6 @@ async def _handle_start_command(chat_id: int, user_id: int):
                 "text": welcome_message,
                 "parse_mode": "HTML",
             }
-            if reply_markup:
-                import json
-                payload["reply_markup"] = json.dumps(reply_markup)
             
             response = await client.post(
                 f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage",

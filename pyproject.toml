@@ -35,3 +35,5 @@ skip_glob = ["*/migrations/*", "*/venv/*", "*/.venv/*"]
 
 
 
+
+
