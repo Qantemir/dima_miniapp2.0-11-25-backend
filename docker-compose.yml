@@ -13,9 +13,7 @@ services:
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS}
-      - NEXT_PUBLIC_VITE_API_URL=/api
-      - NEXT_PUBLIC_VITE_PUBLIC_URL=${NEXT_PUBLIC_VITE_PUBLIC_URL:-http://localhost:8000}
-      - NEXT_PUBLIC_VITE_ADMIN_IDS=${ADMIN_IDS}
+      - PUBLIC_URL=${PUBLIC_URL:-http://localhost:8000}
     depends_on:
       - mongo
       - redis
