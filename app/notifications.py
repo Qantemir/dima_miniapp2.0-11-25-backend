@@ -302,7 +302,7 @@ async def notify_customer_order_status(
 
     # Формируем сообщение в зависимости от статуса
     if order_status == "принят":
-        status_message = "✅ Ваш заказ принят! Мы привезем его в течение часа."
+        status_message = "✅ Ваш заказ принят! Мы привезем его от одного часа до двух."
     elif order_status == "отказано":
         reason_text = f"\n\nПричина: {rejection_reason}" if rejection_reason else ""
         status_message = f"❌ Ваш заказ отклонен по какой-то причине.{reason_text}"
