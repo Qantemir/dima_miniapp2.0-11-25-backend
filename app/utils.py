@@ -4,13 +4,14 @@ import base64
 import io
 import logging
 import re
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from bson import ObjectId
 from gridfs import GridFS
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from PIL import Image
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 
 from .config import settings
 
@@ -247,37 +248,33 @@ async def decrement_variant_quantity(
 
         new_quantity = current_quantity - quantity
 
-        # Уменьшаем количество варианта (без фильтра по типу, чтобы сработало при хранении строки)
-        result = await db.products.update_one(
+        # Уменьшаем количество варианта и сразу получаем обновлённый документ
+        # (единый round-trip вместо update + повторный find)
+        updated_product = await db.products.find_one_and_update(
             {
                 "_id": product_oid,
                 "variants.id": variant_id,
             },
             {
                 "$set": {"variants.$.quantity": new_quantity}
-            }
+            },
+            projection={"variants": 1},
+            return_document=ReturnDocument.AFTER,
         )
 
-        if result.modified_count == 0:
+        if not updated_product:
             return False
 
-        # Получаем обновленный товар со всеми вариантами для проверки доступности
-        updated_product = await db.products.find_one(
-            {"_id": product_oid},
-            {"variants": 1}
-        )
+        variants = updated_product.get("variants", [])
+        # Проверяем, есть ли хотя бы один вариант с quantity > 0
+        has_available_variant = any((v.get("quantity", 0) or 0) > 0 for v in variants)
 
-        if updated_product:
-            variants = updated_product.get("variants", [])
-            # Проверяем, есть ли хотя бы один вариант с quantity > 0
-            has_available_variant = any((v.get("quantity", 0) or 0) > 0 for v in variants)
-
-            # Если все варианты закончились, устанавливаем available = false
-            if not has_available_variant:
-                await db.products.update_one(
-                    {"_id": product_oid},
-                    {"$set": {"available": False}}
-                )
+        # Если все варианты закончились, устанавливаем available = false
+        if not has_available_variant:
+            await db.products.update_one(
+                {"_id": product_oid},
+                {"$set": {"available": False}}
+            )
 
         return True
     except Exception as e:
@@ -303,26 +300,27 @@ async def restore_variant_quantity(
     """
     try:
         product_oid = as_object_id(product_id)
-        
-        # Получаем текущее состояние товара
+
+        # Получаем текущее состояние товара одним round-trip: читаем и блокируем
+        # значение варианта перед расчётом нового количества.
         product = await db.products.find_one(
             {"_id": product_oid, "variants.id": variant_id},
             {"variants": 1, "available": 1}
         )
-        
+
         if not product:
             logger.warning(f"Товар {product_id} или вариант {variant_id} не найден при восстановлении количества")
             return
-        
+
         # Находим вариант и получаем текущее количество
         variant = next((v for v in product.get("variants", []) if v.get("id") == variant_id), None)
         if not variant:
             logger.warning(f"Вариант {variant_id} не найден в товаре {product_id}")
             return
-        
+
         current_quantity = variant.get("quantity", 0)
         was_unavailable = current_quantity <= 0
-        
+
         try:
             numeric_current = int(current_quantity)
         except Exception:
@@ -330,24 +328,21 @@ async def restore_variant_quantity(
 
         new_quantity = numeric_current + quantity
 
-        # Восстанавливаем количество варианта
+        # Восстанавливаем количество варианта и, если нужно, сразу делаем товар
+        # доступным (available = true) одной атомарной операцией обновления.
+        update_ops: dict = {
+            "$set": {"variants.$.quantity": new_quantity}
+        }
+        if was_unavailable and new_quantity > 0:
+            update_ops["$set"]["available"] = True
+
         await db.products.update_one(
             {
                 "_id": product_oid,
                 "variants.id": variant_id
             },
-            {
-                "$set": {"variants.$.quantity": new_quantity}
-            }
+            update_ops
         )
-
-        # Если товар был недоступен (quantity <= 0) и теперь стал доступен (quantity > 0),
-        # устанавливаем available = true
-        if was_unavailable and new_quantity > 0:
-            await db.products.update_one(
-                {"_id": product_oid},
-                {"$set": {"available": True}}
-            )
     except Exception as e:
         logger.error(f"Ошибка при восстановлении количества варианта: {e}")
 
@@ -366,14 +361,12 @@ async def mark_order_as_deleted(
     Returns:
         True если операция успешна, False в противном случае
     """
-    from datetime import datetime
-    
     try:
         order_oid = as_object_id(order_id)
         result = await db.orders.update_one(
             {"_id": order_oid},
             {
-                "$set": {"deleted_at": datetime.utcnow()}
+                "$set": {"deleted_at": datetime.now(timezone.utc).replace(tzinfo=None)}
             }
         )
         return result.modified_count > 0
@@ -667,7 +660,6 @@ async def save_base64_image_to_gridfs(
         return None
     
     import asyncio
-    from datetime import datetime
     from uuid import uuid4
     
     try:
@@ -725,7 +717,7 @@ async def save_base64_image_to_gridfs(
                 filename=filename,
                 content_type=mime_type,
                 metadata={
-                    "uploaded_at": datetime.utcnow(),
+                    "uploaded_at": datetime.now(timezone.utc).replace(tzinfo=None),
                     "source": "product_image",
                 },
             ),

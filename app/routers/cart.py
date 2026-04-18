@@ -1,6 +1,7 @@
 """Модуль для работы с корзиной покупок."""
 
 import asyncio
+import logging
 from datetime import datetime, timedelta
 from uuid import uuid4
 
@@ -15,6 +16,8 @@ from ..utils import as_object_id, decrement_variant_quantity, normalize_product_
 
 # Время жизни корзины в минутах
 CART_EXPIRY_MINUTES = 15
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["cart"])
 
@@ -209,7 +212,10 @@ async def get_cart_document(db: AsyncIOMotorDatabase, user_id: int, check_expiry
 
         if datetime.utcnow() > updated_at + timedelta(minutes=CART_EXPIRY_MINUTES):
             # Очищаем корзину в фоне, не блокируя ответ
-            asyncio.create_task(cleanup_expired_cart(db, cart))
+            cleanup_task = asyncio.create_task(cleanup_expired_cart(db, cart))
+            cleanup_task.add_done_callback(
+                lambda t: logger.warning(f"Background task failed: {t.exception()}") if t.exception() else None
+            )
             # Создаем новую корзину сразу
             cart = {
                 "user_id": user_id,
@@ -422,8 +428,11 @@ async def add_to_cart(
 
     # Обновление клиента в фоне (fire-and-forget для скорости)
     try:
-        asyncio.create_task(
+        customer_task = asyncio.create_task(
             db.customers.update_one({"telegram_id": user_id}, {"$set": {"last_cart_activity": now}}, upsert=True)
+        )
+        customer_task.add_done_callback(
+            lambda t: logger.warning(f"Background task failed: {t.exception()}") if t.exception() else None
         )
     except Exception:
         pass  # Игнорируем ошибки

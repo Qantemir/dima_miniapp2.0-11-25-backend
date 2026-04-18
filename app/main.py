@@ -5,7 +5,6 @@ import gzip
 import io
 import json
 import logging
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -582,22 +581,6 @@ async def root():
 async def health():
     """Health check endpoint that doesn't require database."""
     return {"status": "ok", "message": "Server is running"}
-
-
-@app.get("/debug/env")
-async def debug_env():
-    """Debug endpoint to check environment variables."""
-    import os
-    
-    # Получаем все переменные окружения, связанные с ADMIN
-    admin_vars = {k: v for k, v in os.environ.items() if "ADMIN" in k.upper()}
-    
-    return {
-        "admin_ids_from_settings": settings.admin_ids,
-        "admin_ids_from_env": os.getenv("ADMIN_IDS"),
-        "all_admin_env_vars": admin_vars,
-        "env_file_exists": ENV_PATH.exists() if hasattr(settings, "ENV_PATH") else False,
-    }
 
 
 # SPA fallback - отдаем Next.js для всех не-API маршрутов

@@ -17,6 +17,15 @@ router = APIRouter(tags=["bot"])
 
 logger = logging.getLogger(__name__)
 
+# Проверяем настройку секрета webhook при импорте модуля (один раз).
+# Если секрет не задан, предупреждаем, но продолжаем работу (обратная совместимость).
+_webhook_secret_at_import = get_settings().telegram_webhook_secret
+if not _webhook_secret_at_import:
+    logger.warning(
+        "TELEGRAM_WEBHOOK_SECRET is not set; webhook signature verification is disabled. "
+        "Set TELEGRAM_WEBHOOK_SECRET to enable X-Telegram-Bot-Api-Secret-Token verification."
+    )
+
 
 @router.get("/bot/webhook/status")
 async def get_webhook_status():
@@ -104,6 +113,15 @@ async def handle_bot_webhook(
     db: AsyncIOMotorDatabase = Depends(get_db),
 ):
     """Обрабатывает webhook от Telegram Bot API (callback от inline-кнопок и команды)."""
+    # Опциональная проверка подписи webhook от Telegram.
+    # Если TELEGRAM_WEBHOOK_SECRET настроен, проверяем заголовок X-Telegram-Bot-Api-Secret-Token.
+    expected_secret = get_settings().telegram_webhook_secret
+    if expected_secret:
+        provided_secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if provided_secret != expected_secret:
+            logger.warning("Webhook rejected: invalid or missing X-Telegram-Bot-Api-Secret-Token header")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid webhook secret")
+
     try:
         data = await request.json()
 

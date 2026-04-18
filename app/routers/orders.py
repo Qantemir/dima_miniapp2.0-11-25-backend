@@ -201,13 +201,16 @@ async def create_order(
     try:
         result = await db.orders.insert_one(order_doc)
     except Exception:
-        # Удаляем файл из GridFS при ошибке (fire-and-forget)
+        # Удаляем файл из GridFS при ошибке (fire-and-forget с логированием ошибок)
         try:
-            asyncio.create_task(
+            cleanup_task = asyncio.create_task(
                 asyncio.get_event_loop().run_in_executor(None, lambda: get_gridfs().delete(ObjectId(receipt_file_id)))
             )
-        except Exception:
-            pass
+            cleanup_task.add_done_callback(
+                lambda t: logger.error(f"GridFS cleanup failed: {t.exception()}") if t.exception() else None
+            )
+        except Exception as cleanup_exc:
+            logger.error(f"Не удалось запланировать очистку GridFS для receipt_file_id={receipt_file_id}: {cleanup_exc}")
         raise
 
     # Добавляем _id к order_doc для создания ответа без дополнительного запроса к БД
@@ -217,10 +220,15 @@ async def create_order(
     async def delete_cart_background():
         try:
             await db.carts.delete_one({"_id": as_object_id(cart.id)})
-        except Exception:
-            pass  # Игнорируем ошибки при удалении корзины в фоне
-    
-    asyncio.create_task(delete_cart_background())
+        except Exception as cart_del_exc:
+            logger.error(
+                f"Не удалось удалить корзину {cart.id} после создания заказа {result.inserted_id}: {cart_del_exc}"
+            )
+
+    cart_delete_task = asyncio.create_task(delete_cart_background())
+    cart_delete_task.add_done_callback(
+        lambda t: logger.error(f"Cart delete task failed: {t.exception()}") if t.exception() else None
+    )
     
     # Создаем объект Order из order_doc без дополнительного запроса к БД
     order = Order(**serialize_doc(order_doc) | {"id": str(result.inserted_id)})

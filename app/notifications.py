@@ -16,6 +16,20 @@ from .utils import get_gridfs
 logger = logging.getLogger(__name__)
 
 
+def _escape_md(value: str) -> str:
+    """
+    Экранирует специальные символы Telegram Markdown в пользовательском вводе,
+    чтобы произвольные строки (имена, адреса, названия товаров) не ломали рендеринг.
+    Набор символов покрывает MarkdownV2; для legacy Markdown обратный слеш
+    также корректно обрабатывается для этих символов.
+    """
+    if not value:
+        return ""
+    for ch in r"_*[]()~`>#+-=|{}.!":
+        value = value.replace(ch, f"\\{ch}")
+    return value
+
+
 def format_amount(amount: float) -> str:
     """
     Форматирует сумму, убирая .00 для целых чисел.
@@ -88,11 +102,13 @@ async def notify_admins_new_order(
 
         items_details.append({"product_name": product_name, "variant_name": variant_name or "", "quantity": quantity})
 
-    # Формируем раскрытый список товаров
+    # Формируем раскрытый список товаров (экранируем пользовательские строки)
     items_text = "📦 *Товары:*\n"
     for idx, item_detail in enumerate(items_details, 1):
-        variant_info = f" ({item_detail['variant_name']})" if item_detail["variant_name"] else ""
-        items_text += f"{idx}. {item_detail['product_name']}{variant_info} × {item_detail['quantity']}\n"
+        safe_product_name = _escape_md(item_detail["product_name"])
+        safe_variant_name = _escape_md(item_detail["variant_name"])
+        variant_info = f" ({safe_variant_name})" if item_detail["variant_name"] else ""
+        items_text += f"{idx}. {safe_product_name}{variant_info} × {item_detail['quantity']}\n"
 
     # Формируем ссылку на 2ГИС для адреса
     from urllib.parse import quote
@@ -107,15 +123,20 @@ async def notify_admins_new_order(
     # Например: "Ломова 181/2" -> "https://2gis.kz/search/%D0%9B%D0%BE%D0%BC%D0%BE%D0%B2%D0%B0%20181%2F2"
     address_2gis_url = f"https://2gis.kz/search/{address_encoded}"
 
-    # В ссылке показываем оригинальный адрес с "/"
-    address_link = f"[{delivery_address}]({address_2gis_url})"
+    # В ссылке показываем оригинальный адрес с "/" (экранируем текст ссылки)
+    safe_delivery_address = _escape_md(delivery_address)
+    address_link = f"[{safe_delivery_address}]({address_2gis_url})"
+
+    # Экранируем пользовательские строки для Markdown
+    safe_customer_name = _escape_md(customer_name)
+    safe_customer_phone = _escape_md(customer_phone)
 
     # Формируем текст сообщения
     message = (
         f"🆕 *Новый заказ!*\n\n"
         f"📋 Заказ: `{order_id[-6:]}`\n"
-        f"👤 Клиент: {customer_name}\n"
-        f"📞 Телефон: {customer_phone}\n"
+        f"👤 Клиент: {safe_customer_name}\n"
+        f"📞 Телефон: {safe_customer_phone}\n"
         f"📍 Адрес: {address_link}\n"
         f"💰 Сумма: {format_amount(total_amount)} ₸\n\n"
         f"{items_text}"
@@ -161,9 +182,17 @@ async def notify_admins_new_order(
             )
 
         # Выполняем все отправки параллельно
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Убираем логирование для скорости (не критично)
+        # Логируем исключения, чтобы потерянные ошибки не оставались незамеченными
+        for admin_id, result in zip(settings.admin_ids, results):
+            if isinstance(result, Exception):
+                logger.warning(
+                    "Не удалось отправить уведомление администратору %s о заказе %s: %r",
+                    admin_id,
+                    order_id,
+                    result,
+                )
 
 
 async def _send_notification_with_receipt(
@@ -305,7 +334,7 @@ async def notify_customer_order_status(
         status_message = "✅ Ваш заказ принят! Ожидайте звонка от курьера."
     elif order_status == "отказано":
         reason_text = f"\n\nПричина: {rejection_reason}" if rejection_reason else ""
-        status_message = f"❌ Ваш заказ отклонен по топричине:.{reason_text}"
+        status_message = f"❌ Ваш заказ отклонен по причине: {reason_text}"
     else:
         status_message = f"Статус вашего заказа изменён: {order_status}"
 

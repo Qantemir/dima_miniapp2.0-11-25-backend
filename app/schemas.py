@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional
 
@@ -83,8 +83,8 @@ class Category(CategoryBase):
 class ProductBase(BaseModel):
     """ProductBase модель."""
 
-    name: str
-    description: Optional[str] = None
+    name: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=5000)
     price: float = Field(..., ge=0)
     image: Optional[str] = None
     images: Optional[List[str]] = None
@@ -101,8 +101,8 @@ class ProductCreate(ProductBase):
 class ProductUpdate(BaseModel):
     """ProductUpdate модель."""
 
-    name: Optional[str] = None
-    description: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=5000)
     price: Optional[float] = Field(None, ge=0)
     image: Optional[str] = None
     images: Optional[List[str]] = None
@@ -205,16 +205,16 @@ class Order(BaseModel):
 
     id: PyObjectId = Field(default_factory=PyObjectId, alias="id")
     user_id: int
-    customer_name: str
-    customer_phone: str
-    delivery_address: str
-    comment: Optional[str] = None
+    customer_name: str = Field(..., min_length=1, max_length=200)
+    customer_phone: str = Field(..., min_length=1, max_length=32)
+    delivery_address: str = Field(..., min_length=1, max_length=500)
+    comment: Optional[str] = Field(default=None, max_length=2000)
     status: OrderStatus = OrderStatus.ACCEPTED
     rejection_reason: Optional[str] = None  # Причина отказа (если статус "отказано")
     items: List[OrderItem]
     total_amount: float
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     can_edit_address: bool = True
     payment_receipt_file_id: Optional[str] = None  # ID файла в GridFS
     payment_receipt_url: Optional[str] = None  # Устаревшее поле, оставлено для обратной совместимости
@@ -232,16 +232,16 @@ class Order(BaseModel):
 class CreateOrderRequest(BaseModel):
     """CreateOrderRequest модель."""
 
-    name: str
-    phone: str
-    address: str
-    comment: Optional[str] = None
+    name: str = Field(..., min_length=1, max_length=200)
+    phone: str = Field(..., min_length=1, max_length=32)
+    address: str = Field(..., min_length=1, max_length=500)
+    comment: Optional[str] = Field(default=None, max_length=2000)
 
 
 class UpdateAddressRequest(BaseModel):
     """UpdateAddressRequest модель."""
 
-    address: str
+    address: str = Field(..., min_length=1, max_length=500)
 
 
 class UpdateStatusRequest(BaseModel):
@@ -254,8 +254,8 @@ class UpdateStatusRequest(BaseModel):
 class BroadcastRequest(BaseModel):
     """BroadcastRequest модель."""
 
-    title: str
-    message: str
+    title: str = Field(..., min_length=1, max_length=200)
+    message: str = Field(..., min_length=1, max_length=4000)
     segment: str = Field(default="all")
     link: Optional[str] = None
 
@@ -290,12 +290,12 @@ class OrderSummary(BaseModel):
     """Упрощенная модель заказа для списка (без полных items и лишних полей)."""
 
     id: PyObjectId = Field(default_factory=PyObjectId, alias="id")
-    customer_name: str
-    customer_phone: str
-    delivery_address: str
+    customer_name: str = Field(..., min_length=1, max_length=200)
+    customer_phone: str = Field(..., min_length=1, max_length=32)
+    delivery_address: str = Field(..., min_length=1, max_length=500)
     status: OrderStatus = OrderStatus.ACCEPTED
     total_amount: float
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     items_count: int = Field(..., description="Количество товаров в заказе")
 
     class Config:
@@ -324,8 +324,8 @@ class Customer(BaseModel):
 
     id: PyObjectId = Field(default_factory=PyObjectId, alias="id")
     telegram_id: int
-    added_at: datetime = Field(default_factory=datetime.utcnow)
-    last_cart_activity: datetime = Field(default_factory=datetime.utcnow)
+    added_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    last_cart_activity: datetime = Field(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
     class Config:
         """Конфигурация Pydantic."""
