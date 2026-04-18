@@ -18,13 +18,12 @@ from starlette.concurrency import iterate_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from .cache import close_redis, get_redis
 from .config import settings, ENV_PATH
 from .database import close_mongo_connection, connect_to_mongo, get_db
 from .routers import admin, bot_webhook, cart, catalog, orders, store
 from .routers.cart import cleanup_expired_carts_periodic
 from .schemas import CatalogResponse, OrderStatus, StoreStatus
-from .utils import permanently_delete_order_entry
+from .utils import close_gridfs_client, permanently_delete_order_entry
 
 app = FastAPI(title="Mini Shop Telegram Backend", version="1.0.0")
 
@@ -499,9 +498,6 @@ async def startup():
     # Подключаемся к MongoDB при старте для быстрого первого запроса
     await connect_to_mongo()
 
-    # Подключаемся к Redis при старте
-    await get_redis()
-
     # Запускаем фоновую задачу для автоматической очистки заказов (раз в день)
     asyncio.create_task(cleanup_orders())
 
@@ -558,9 +554,9 @@ async def shutdown():
         logger.error(f"Ошибка при закрытии соединения с MongoDB: {e}")
 
     try:
-        await close_redis()
+        close_gridfs_client()
     except Exception as e:
-        logger.error(f"Ошибка при закрытии соединения с Redis: {e}")
+        logger.error(f"Ошибка при закрытии sync GridFS клиента MongoDB: {e}")
 
 
 app.include_router(catalog.router, prefix=settings.api_prefix)

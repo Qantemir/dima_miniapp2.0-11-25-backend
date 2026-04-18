@@ -112,9 +112,6 @@ docker run -p 8000:8000 --env-file .env backend-api
 MONGO_URI=mongodb://localhost:27017
 MONGO_DB=miniapp
 
-# Redis
-REDIS_URL=redis://localhost:6379/0
-
 # Telegram Bot
 TELEGRAM_BOT_TOKEN=your_bot_token
 ADMIN_IDS=123456789,987654321

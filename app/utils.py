@@ -32,27 +32,42 @@ def get_gridfs() -> GridFS:
     
     if _gridfs is None or _sync_client is None:
         # Создаем синхронный клиент MongoDB для GridFS
-        # Используем те же настройки, что и для async клиента
-        use_ssl = "mongodb.net" in settings.mongo_uri or "ssl=true" in settings.mongo_uri.lower()
+        # GridFS используется точечно, поэтому держим более "спокойный" пул,
+        # чтобы не раздувать auth/connect churn в логах Mongo.
+        uri_lower = settings.mongo_uri.lower()
+        use_tls = "mongodb.net" in uri_lower or "ssl=true" in uri_lower or "tls=true" in uri_lower
         
         client_config = {
             "serverSelectionTimeoutMS": 30000,
-            "maxPoolSize": 50,
-            "minPoolSize": 10,
-            "maxIdleTimeMS": 45000,
+            "maxPoolSize": 20,
+            "minPoolSize": 1,
+            "maxIdleTimeMS": 1800000,
             "connectTimeoutMS": 20000,
             "socketTimeoutMS": 60000,
             "retryWrites": True,
             "retryReads": True,
+            "waitQueueTimeoutMS": 30000,
+            "appname": "dima-miniapp-gridfs",
         }
         
-        if use_ssl:
-            client_config["ssl"] = True
+        if use_tls:
+            client_config["tls"] = True
         
         _sync_client = MongoClient(settings.mongo_uri, **client_config)
         _gridfs = GridFS(_sync_client[settings.mongo_db])
     
     return _gridfs
+
+
+def close_gridfs_client() -> None:
+    """Закрывает sync MongoClient, используемый GridFS."""
+    global _sync_client, _gridfs
+
+    if _sync_client is not None:
+        _sync_client.close()
+
+    _sync_client = None
+    _gridfs = None
 
 
 def as_object_id(value: str | ObjectId) -> ObjectId:

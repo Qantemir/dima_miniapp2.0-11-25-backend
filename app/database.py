@@ -35,6 +35,15 @@ async def connect_to_mongo():
             return
 
         try:
+            # Проверяем, что мы в правильном event loop контексте
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                logger.debug(f"MongoDB client will be created in event loop: {loop}")
+            except RuntimeError:
+                logger.warning("No running event loop detected - this may cause issues with Motor")
+                return
+
             uri_lower = settings.mongo_uri.lower()
             use_ssl = "mongodb.net" in uri_lower or "ssl=true" in uri_lower or "tls=true" in uri_lower
 
@@ -58,6 +67,9 @@ async def connect_to_mongo():
 
             if use_ssl:
                 client_config["tls"] = True
+
+            # Явно указываем event loop для Motor (хотя в 3.x это обычно не требуется)
+            client_config["io_loop"] = loop
 
             new_client = AsyncIOMotorClient(settings.mongo_uri, **client_config)
             # Один ping при старте, чтобы сразу увидеть проблему, а не ловить её позже.

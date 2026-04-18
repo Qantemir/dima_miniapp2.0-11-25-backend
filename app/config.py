@@ -42,7 +42,6 @@ class Settings(BaseSettings):
 
     mongo_uri: str = Field("mongodb://localhost:27017", env="MONGO_URI")
     mongo_db: str = Field("miniapp", env="MONGO_DB")
-    redis_url: str = Field("redis://localhost:6379/0", env="REDIS_URL")
     api_prefix: str = "/api"
     # BaseSettings автоматически загружает переменные окружения по имени поля (case-insensitive)
     # Но для надежности также проверяем ADMIN_IDS в валидаторе
@@ -152,10 +151,6 @@ class Settings(BaseSettings):
         if env_value:
             self.mongo_uri = env_value.strip()
 
-        env_value = os.getenv("REDIS_URL")
-        if env_value:
-            self.redis_url = env_value.strip()
-        
         if not self.telegram_bot_token:
             env_value = os.getenv("TELEGRAM_BOT_TOKEN")
             if env_value:

@@ -1,7 +1,5 @@
 """Модуль для работы со статусом магазина."""
 
-import asyncio
-import json
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -12,7 +10,6 @@ from pymongo import ReturnDocument
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 from ..auth import verify_admin
-from ..cache import cache_get, cache_set, make_cache_key
 from ..database import get_db
 from ..schemas import StoreSleepRequest, StoreStatus
 
@@ -27,7 +24,7 @@ _cache_ttl_seconds = 60  # Синхронизировано с HTTP Cache-Contro
 async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cache: bool = True):
     """
     Получает или создает статус магазина с опциональным кешированием.
-    Использует двухуровневое кэширование: Redis (распределенный) + in-memory (локальный).
+    Использует локальное in-memory кеширование для снижения числа чтений из MongoDB.
 
     Args:
         db: Подключение к БД (может быть None если БД недоступна)
@@ -38,16 +35,6 @@ async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cac
     # Если БД недоступна, возвращаем fallback из кеша или дефолтные значения
     if db is None:
         if use_cache:
-            # Сначала проверяем Redis
-            try:
-                cache_key = make_cache_key("store:status")
-                cached_data = await cache_get(cache_key)
-                if cached_data:
-                    import json
-                    return json.loads(cached_data.decode("utf-8") if isinstance(cached_data, bytes) else cached_data)
-            except Exception:
-                pass
-            # Потом in-memory кэш
             if _cache is not None:
                 return _cache.copy()
         return {
@@ -58,21 +45,6 @@ async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cac
 
     # Проверяем кеш, если он включен
     if use_cache:
-        # Сначала проверяем Redis (распределенный кэш)
-        try:
-            cache_key = make_cache_key("store:status")
-            cached_data = await cache_get(cache_key)
-            if cached_data:
-                import json
-                doc = json.loads(cached_data.decode("utf-8") if isinstance(cached_data, bytes) else cached_data)
-                # Обновляем in-memory кэш для быстрого доступа
-                _cache = doc.copy()
-                _cache_expires_at = datetime.utcnow() + timedelta(seconds=_cache_ttl_seconds)
-                return doc
-        except Exception:
-            pass
-        
-        # Потом проверяем in-memory кэш (локальный)
         if _cache is not None and _cache_expires_at is not None:
             if datetime.utcnow() < _cache_expires_at:
                 return _cache.copy()
@@ -95,7 +67,7 @@ async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cac
             }
             result = await db.store_status.insert_one(status_doc)
             status_doc["_id"] = result.inserted_id
-            # Обновляем кеш (Redis + in-memory)
+            # Обновляем локальный кеш
             if use_cache:
                 _update_cache(status_doc)
             return status_doc
@@ -113,7 +85,7 @@ async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cac
             # Удаляем поле из документа в памяти
             doc.pop("sleep_until", None)
 
-        # Обновляем кеш (Redis + in-memory)
+        # Обновляем локальный кеш
         if use_cache:
             _update_cache(doc)
 
@@ -147,38 +119,19 @@ async def get_or_create_store_status(db: Optional[AsyncIOMotorDatabase], use_cac
 
 
 def _update_cache(doc: dict):
-    """Обновляет кеш статуса магазина (Redis + in-memory)."""
+    """Обновляет локальный кеш статуса магазина."""
     global _cache, _cache_expires_at
     
     # Обновляем in-memory кэш
     _cache = doc.copy()
     _cache_expires_at = datetime.utcnow() + timedelta(seconds=_cache_ttl_seconds)
-    
-    # Сохраняем в Redis асинхронно (не блокируем ответ)
-    try:
-        cache_key = make_cache_key("store:status")
-        # Сериализуем datetime для JSON
-        doc_for_cache = doc.copy()
-        if "updated_at" in doc_for_cache and isinstance(doc_for_cache["updated_at"], datetime):
-            doc_for_cache["updated_at"] = doc_for_cache["updated_at"].isoformat()
-        cache_data = json.dumps(doc_for_cache, ensure_ascii=False).encode("utf-8")
-        asyncio.create_task(cache_set(cache_key, cache_data, ttl=_cache_ttl_seconds))
-    except Exception:
-        pass  # Игнорируем ошибки Redis для скорости
 
 
 def _invalidate_cache():
-    """Инвалидирует кеш статуса магазина."""
+    """Инвалидирует локальный кеш статуса магазина."""
     global _cache, _cache_expires_at
     _cache = None
     _cache_expires_at = None
-    # Redis кэш истечет автоматически по TTL, но можно и удалить явно
-    try:
-        from ..cache import cache_delete, make_cache_key
-        cache_key = make_cache_key("store:status")
-        asyncio.create_task(cache_delete(cache_key))
-    except Exception:
-        pass
 
 
 def _normalize_store_status_doc(doc: dict) -> dict:
