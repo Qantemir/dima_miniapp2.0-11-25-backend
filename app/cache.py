@@ -11,16 +11,31 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 _redis_client: Optional[aioredis.Redis] = None
+_connect_lock: Optional["asyncio.Lock"] = None
+
+
+def _get_lock():
+    import asyncio
+    global _connect_lock
+    if _connect_lock is None:
+        _connect_lock = asyncio.Lock()
+    return _connect_lock
 
 
 async def get_redis() -> Optional[aioredis.Redis]:
     """Получить Redis клиент, создавая при необходимости."""
     global _redis_client
 
-    if _redis_client is None:
+    if _redis_client is not None:
+        return _redis_client
+
+    async with _get_lock():
+        if _redis_client is not None:
+            return _redis_client
+
         try:
             redis_url = getattr(settings, "redis_url", "redis://localhost:6379/0")
-            _redis_client = await aioredis.from_url(
+            new_client = await aioredis.from_url(
                 redis_url,
                 encoding="utf-8",
                 decode_responses=False,  # Работаем с bytes для производительности
@@ -34,8 +49,10 @@ async def get_redis() -> Optional[aioredis.Redis]:
                 socket_keepalive_options={},
             )
             # Проверяем подключение
-            await _redis_client.ping()
-        except Exception:
+            await new_client.ping()
+            _redis_client = new_client
+        except Exception as e:
+            logger.warning(f"Redis connect failed: {e}")
             _redis_client = None
 
     return _redis_client
@@ -55,8 +72,8 @@ async def cache_get(key: str) -> Optional[bytes]:
         redis = await get_redis()
         if redis:
             return await redis.get(key)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis get failed: {e}")
     return None
 
 
@@ -67,8 +84,8 @@ async def cache_set(key: str, value: bytes, ttl: int = 300) -> bool:
         if redis:
             await redis.setex(key, ttl, value)
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis set failed: {e}")
     return False
 
 
@@ -79,8 +96,8 @@ async def cache_delete(key: str) -> bool:
         if redis:
             await redis.delete(key)
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis delete failed: {e}")
     return False
 
 
@@ -94,8 +111,8 @@ async def cache_delete_pattern(pattern: str) -> int:
                 keys.append(key)
             if keys:
                 return await redis.delete(*keys)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Redis delete_pattern failed: {e}")
     return 0
 
 

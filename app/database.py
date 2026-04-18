@@ -1,6 +1,5 @@
 """Модуль для работы с базой данных MongoDB."""
 
-import asyncio
 import logging
 from typing import Optional
 
@@ -14,43 +13,62 @@ logger = logging.getLogger(__name__)
 client: AsyncIOMotorClient | None = None
 db: AsyncIOMotorDatabase | None = None
 _indexes_initialized = False
+_connect_lock: Optional["asyncio.Lock"] = None
+
+
+def _get_lock():
+    import asyncio
+    global _connect_lock
+    if _connect_lock is None:
+        _connect_lock = asyncio.Lock()
+    return _connect_lock
 
 
 async def connect_to_mongo():
-    """Подключается к MongoDB. Вызывается лениво при первом использовании."""
+    """Подключается к MongoDB один раз за процесс. Безопасно вызывать многократно."""
     global client, db
-    if client is None:
+    if client is not None and db is not None:
+        return
+
+    async with _get_lock():
+        if client is not None and db is not None:
+            return
+
         try:
-            # Оптимизация connection pool для быстрой работы с увеличенными таймаутами для Atlas
-            # Определяем, нужен ли SSL (если URI содержит mongodb.net или ssl=true)
-            use_ssl = "mongodb.net" in settings.mongo_uri or "ssl=true" in settings.mongo_uri.lower()
+            uri_lower = settings.mongo_uri.lower()
+            use_ssl = "mongodb.net" in uri_lower or "ssl=true" in uri_lower or "tls=true" in uri_lower
 
             client_config = {
-                "serverSelectionTimeoutMS": 30000,  # Увеличено до 30 секунд для SSL handshake
-                "maxPoolSize": 50,  # Больше соединений для параллельных запросов
-                "minPoolSize": 10,  # Минимум соединений всегда готовы
-                "maxIdleTimeMS": 45000,  # Время жизни неактивных соединений
-                "connectTimeoutMS": 20000,  # Увеличено до 20 секунд для SSL handshake
-                "socketTimeoutMS": 60000,  # Увеличено до 60 секунд для операций чтения
-                "retryWrites": True,  # Автоматические повторы записи
-                "retryReads": True,  # Автоматические повторы чтения
-                "heartbeatFrequencyMS": 10000,  # Проверка соединения каждые 10 секунд
-                "waitQueueTimeoutMS": 30000,  # Таймаут ожидания в очереди соединений
+                "serverSelectionTimeoutMS": 30000,
+                "maxPoolSize": 50,
+                "minPoolSize": 5,
+                # Atlas по умолчанию закрывает простаивающие коннекты через ~10 мин.
+                # 30 мин здесь даёт пулу реально переиспользовать соединения и
+                # убирает постоянный churn "Connection accepted/ended" в логах.
+                "maxIdleTimeMS": 1800000,
+                "connectTimeoutMS": 20000,
+                "socketTimeoutMS": 60000,
+                "retryWrites": True,
+                "retryReads": True,
+                # 10s был слишком агрессивным для Atlas — заметно нагружал auth.
+                "heartbeatFrequencyMS": 30000,
+                "waitQueueTimeoutMS": 30000,
+                "appname": "dima-miniapp-backend",
             }
 
-            # Для MongoDB Atlas явно включаем SSL
             if use_ssl:
-                client_config["ssl"] = True
+                client_config["tls"] = True
 
-            client = AsyncIOMotorClient(settings.mongo_uri, **client_config)
+            new_client = AsyncIOMotorClient(settings.mongo_uri, **client_config)
+            # Один ping при старте, чтобы сразу увидеть проблему, а не ловить её позже.
+            await new_client.admin.command("ping")
+
+            client = new_client
             db = client[settings.mongo_db]
             await ensure_indexes(db)
-            # Проверяем подключение
-            await client.admin.command("ping")
+            logger.info("MongoDB connected (pool min=5 max=50, idle=30m, heartbeat=30s)")
         except Exception as e:
             logger.error(f"Failed to connect to MongoDB: {e}")
-            logger.error("Server will start but database operations will fail. Please start MongoDB.")
-            # Не пытаемся продолжать инициализацию, оставляем db=None, чтобы приложение могло подняться
             client = None
             db = None
             return
@@ -58,47 +76,25 @@ async def connect_to_mongo():
 
 async def ensure_db_connection():
     """Убеждается, что подключение к БД установлено."""
-    if client is None:
+    if client is None or db is None:
         await connect_to_mongo()
 
 
 async def close_mongo_connection():
     """Закрывает соединение с MongoDB."""
-    global client
-    if client:
+    global client, db
+    if client is not None:
         client.close()
-        client = None
+    client = None
+    db = None
 
 
 async def get_db() -> Optional[AsyncIOMotorDatabase]:
-    """Получает подключение к БД, подключаясь при необходимости. Возвращает None если БД недоступна."""
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    try:
-        if client is None or db is None:
-            await ensure_db_connection()
-
-        if db is None or client is None:
-            return None
-
-        # Проверяем, что подключение действительно работает (без блокировки, быстро)
-        try:
-            if client is not None:
-                await asyncio.wait_for(client.admin.command("ping"), timeout=2.0)
-        except (asyncio.TimeoutError, Exception):
-            try:
-                await connect_to_mongo()
-            except Exception:
-                pass
-            if db is None:
-                return None
-
-        return db
-    except Exception as e:
-        logger.error(f"Ошибка при получении подключения к БД: {e}", exc_info=True)
-        return None
+    """Возвращает singleton-хэндл БД. Motor сам управляет пулом и health-check,
+    поэтому мы НЕ пингуем Mongo на каждом запросе — это и был источник спама в логах."""
+    if db is None or client is None:
+        await ensure_db_connection()
+    return db
 
 
 async def ensure_indexes(database: AsyncIOMotorDatabase):

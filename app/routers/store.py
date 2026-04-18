@@ -8,6 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import ReturnDocument
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 from ..auth import verify_admin
@@ -247,9 +248,9 @@ async def toggle_store_sleep(
     _admin_id: int = Depends(verify_admin),
 ):
     """Переключает режим сна магазина."""
-    doc = await get_or_create_store_status(db, use_cache=False)
-    await db.store_status.update_one(
-        {"_id": doc["_id"]},
+    # Atomic upsert to avoid lost updates from concurrent admin toggles.
+    updated = await db.store_status.find_one_and_update(
+        {},
         {
             "$set": {
                 "is_sleep_mode": payload.sleep,
@@ -258,10 +259,11 @@ async def toggle_store_sleep(
             },
             "$unset": {
                 "sleep_until": "",   # Удаляем старое поле, если оно есть
-            }
+            },
         },
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
     )
-    updated = await db.store_status.find_one({"_id": doc["_id"]})
     normalized_doc = _normalize_store_status_doc(updated)
     status_model = StoreStatus(**normalized_doc)
     _invalidate_cache()  # Инвалидируем кеш после изменения

@@ -57,6 +57,7 @@ class Settings(BaseSettings):
 
 
     telegram_bot_token: str | None = Field(None, env="TELEGRAM_BOT_TOKEN")
+    telegram_webhook_secret: str | None = Field(None, env="TELEGRAM_WEBHOOK_SECRET")
     # Значения по умолчанию, можно переопределить через env при необходимости
     upload_dir: Path = Field(ROOT_DIR / "uploads", env="UPLOAD_DIR")
     max_receipt_size_mb: int = Field(10, env="MAX_RECEIPT_SIZE_MB")  # 10 МБ по умолчанию
@@ -145,15 +146,15 @@ class Settings(BaseSettings):
         
         # Загружаем критические строковые переменные, если они не загрузились
         # (BaseSettings должен загружать их автоматически, но для надежности проверяем)
-        if not self.mongo_uri or self.mongo_uri == "mongodb://localhost:27017":
-            env_value = os.getenv("MONGO_URI")
-            if env_value:
-                self.mongo_uri = env_value.strip()
-        
-        if not self.redis_url or self.redis_url == "redis://localhost:6379/0":
-            env_value = os.getenv("REDIS_URL")
-            if env_value:
-                self.redis_url = env_value.strip()
+        # Env var должен всегда побеждать, даже если совпадает с дефолтом —
+        # поэтому не сравниваем с дефолтной строкой (эта проверка была багом).
+        env_value = os.getenv("MONGO_URI")
+        if env_value:
+            self.mongo_uri = env_value.strip()
+
+        env_value = os.getenv("REDIS_URL")
+        if env_value:
+            self.redis_url = env_value.strip()
         
         if not self.telegram_bot_token:
             env_value = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -213,7 +214,24 @@ def get_settings() -> Settings:
         raise
     
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # Проверка: в production окружении mongo_uri не должен указывать на localhost.
+    # Это помогает обнаружить неправильно сконфигурированные env vars на Railway и подобных
+    # хостингах, где забыть установить MONGO_URI легко, а дефолт localhost всё замаскирует.
+    environment = (os.getenv("ENVIRONMENT") or "").strip().lower()
+    railway_environment = (os.getenv("RAILWAY_ENVIRONMENT") or "").strip().lower()
+    is_production = environment == "production" or railway_environment == "production"
+    mongo_uri_value = settings.mongo_uri or ""
+    mongo_is_localhost = (
+        mongo_uri_value == "mongodb://localhost:27017"
+        or "localhost" in mongo_uri_value
+        or "127.0.0.1" in mongo_uri_value
+    )
+    if is_production and mongo_is_localhost:
+        logger.error(
+            "MONGO_URI is localhost in production environment — check Railway env vars!"
+        )
+
     # Логируем информацию о ADMIN_IDS
     if not settings.admin_ids:
         logger.error(

@@ -1,6 +1,7 @@
 """Admin router for managing orders and broadcasting messages."""
 
 import asyncio
+import logging
 from datetime import datetime
 from typing import List, Optional
 
@@ -8,6 +9,7 @@ import httpx
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo import ReturnDocument
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
 from ..auth import verify_admin
@@ -30,6 +32,8 @@ from ..utils import (
     restore_variant_quantity,
     serialize_doc,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["admin"])
 
@@ -88,7 +92,8 @@ async def list_orders(
             # Удаляем items из данных, т.к. они не нужны в OrderSummary
             order_data.pop("items", None)
             orders.append(OrderSummary(**order_data))
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to parse order {doc.get('_id')}: {e}")
             continue
 
     next_cursor = None
@@ -220,8 +225,8 @@ async def update_order_status(
                     rejection_reason=rejection_reason,
                 )
             )
-        except Exception:
-            pass  # Игнорируем ошибки уведомлений
+        except Exception as e:
+            logger.warning(f"Failed to notify customer: {e}")
 
     return order_payload
 
@@ -237,18 +242,9 @@ async def quick_accept_order(
 
     Используется для обработки callback от кнопки в Telegram уведомлении.
     """
-    # Получаем заказ
-    doc = await db.orders.find_one({"_id": as_object_id(order_id)})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
-
-    # Проверяем, что заказ еще не обработан
-    current_status = doc.get("status")
-    if current_status in [OrderStatus.ACCEPTED.value, OrderStatus.REJECTED.value]:
-        raise HTTPException(status_code=400, detail=f"Заказ уже обработан. Текущий статус: {current_status}")
-
-    # Обновляем статус на "принят"
-    old_status = doc.get("status")
+    # Атомарно обновляем заказ на "принят", только если он ещё не обработан.
+    # Это предотвращает race condition при одновременном нажатии двумя админами.
+    oid = as_object_id(order_id)
     update_ops = {
         "$set": {
             "status": OrderStatus.ACCEPTED.value,
@@ -256,22 +252,30 @@ async def quick_accept_order(
             "can_edit_address": False,
         }
     }
-    # Убираем причину отказа если она была
-    if old_status == OrderStatus.REJECTED.value:
-        update_ops["$unset"] = {"rejection_reason": ""}
-    
+
     updated = await db.orders.find_one_and_update(
-        {"_id": as_object_id(order_id)},
+        {
+            "_id": oid,
+            "status": {"$nin": [OrderStatus.ACCEPTED.value, OrderStatus.REJECTED.value]},
+        },
         update_ops,
-        return_document=True,
+        return_document=ReturnDocument.AFTER,
     )
 
     if not updated:
-        raise HTTPException(status_code=404, detail="Заказ не найден")
+        # Различаем: заказ отсутствует vs уже в терминальном статусе
+        existing = await db.orders.find_one({"_id": oid})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Заказ не найден")
+        current_status = existing.get("status")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Заказ уже обработан. Текущий статус: {current_status}",
+        )
 
     # Отправляем уведомление клиенту об изменении статуса
     user_id = updated.get("user_id")
-    if user_id and old_status != OrderStatus.ACCEPTED.value:
+    if user_id:
         try:
             await notify_customer_order_status(
                 user_id=user_id,
@@ -281,9 +285,6 @@ async def quick_accept_order(
                 rejection_reason=None,
             )
         except Exception as e:
-            import logging
-
-            logger = logging.getLogger(__name__)
             logger.error(f"Ошибка при отправке уведомления клиенту о статусе заказа {order_id}: {e}")
 
     return Order(**serialize_doc(updated) | {"id": str(updated["_id"])})
@@ -315,40 +316,48 @@ async def send_broadcast(
     db: AsyncIOMotorDatabase = Depends(get_db),
     _admin_id: int = Depends(verify_admin),
 ):
-    """Send broadcast message to all users with production-ready error handling and rate limiting."""
-    import logging
-    import time
-    
-    logger = logging.getLogger(__name__)
+    """Запускает рассылку. Возвращает ответ мгновенно, реальная отправка идёт фоном,
+    чтобы клиент и Railway-прокси не упирались в таймаут."""
     settings = get_settings()
     if not settings.telegram_bot_token:
         raise HTTPException(status_code=500, detail="TELEGRAM_BOT_TOKEN не настроен. Добавьте токен бота в .env файл.")
 
-    # Валидация размера сообщения (Telegram лимит: 4096 символов)
     message_text = f"{payload.title}\n\n{payload.message}"
     if payload.link:
         message_text += f"\n\n🔗 {payload.link}"
-    
+
     if len(message_text) > 4096:
         raise HTTPException(
             status_code=400,
             detail=f"Сообщение слишком длинное ({len(message_text)} символов). Максимум 4096 символов."
         )
 
-    batch_size = 50  # Размер батча для чтения из БД
-    concurrency = 25  # Параллельные отправки (макс. 30 - лимит Telegram)
-    customers_cursor = db.customers.find({}, {"telegram_id": 1})
+    total_count = await db.customers.count_documents({})
 
-    # Отправляем сообщения через Telegram Bot API
-    bot_api_url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
+    asyncio.create_task(_run_broadcast(message_text, settings.telegram_bot_token))
+
+    logger.info(f"Рассылка поставлена в очередь: получателей ~{total_count}")
+    return BroadcastResponse(success=True, sent_count=0, total_count=total_count, failed_count=0)
+
+
+async def _run_broadcast(message_text: str, bot_token: str) -> None:
+    """Фоновая задача рассылки. Берёт свежее соединение с БД и прогоняет всех клиентов батчами."""
+    import time
+
+    db = await get_db()
+    if db is None:
+        logger.error("Рассылка прервана: нет подключения к БД")
+        return
+
+    batch_size = 50
+    concurrency = 25
+    customers_cursor = db.customers.find({}, {"telegram_id": 1})
+    bot_api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     sent_count = 0
     failed_count = 0
     total_count = 0
     invalid_user_ids: list[int] = []
     start_time = time.time()
-    
-    # Rate limiting для Telegram API (30 сообщений в секунду)
-    # Используем sliding window для контроля скорости
     last_send_times: list[float] = []
 
     async def send_to_customer_with_retry(
@@ -504,10 +513,7 @@ async def send_broadcast(
     elapsed_time = time.time() - start_time
     rate = sent_count / elapsed_time if elapsed_time > 0 else 0
 
-    # Логируем итоговую статистику
     logger.info(
         f"Рассылка завершена: всего {total_count}, отправлено {sent_count}, "
         f"ошибок {failed_count}, время {elapsed_time:.1f}с, скорость {rate:.1f} сообщений/сек"
     )
-
-    return BroadcastResponse(success=True, sent_count=sent_count, total_count=total_count, failed_count=failed_count)

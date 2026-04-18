@@ -21,8 +21,6 @@ try:
 
     HAS_ORJSON = True
 except ImportError:
-    import json as orjson
-
     HAS_ORJSON = False
 from ..schemas import (
     CatalogResponse,
@@ -146,7 +144,6 @@ async def _load_catalog_from_db(db: AsyncIOMotorDatabase, only_available: bool =
 
 
 def _catalog_to_dict(payload: CatalogResponse) -> dict:
-    # Используем exclude_unset для исключения None значений и уменьшения размера ответа
     return payload.dict(by_alias=True, exclude_none=False)
 
 
@@ -188,7 +185,7 @@ def _build_catalog_response(catalog: CatalogResponse, etag: str) -> Response:
     if HAS_ORJSON:
         content = orjson.dumps(catalog_dict, option=orjson.OPT_SERIALIZE_NUMPY)
     else:
-        content = orjson.dumps(catalog_dict).encode("utf-8")
+        content = json.dumps(catalog_dict).encode("utf-8")
     response = Response(
         content=content,
         media_type="application/json",
@@ -264,9 +261,6 @@ async def get_admin_catalog(
         response.headers["Pragma"] = "no-cache"
         return response
     except Exception as e:
-        import logging
-
-        logger = logging.getLogger(__name__)
         logger.error(f"Ошибка при загрузке каталога для админки: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Ошибка при загрузке каталога: {str(e)}"
